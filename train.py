@@ -185,8 +185,6 @@ def run_training(model_name: str, settings: dict, config_label: str = "train.jso
     print(f"\nPreprocessing ({model_name}) ...")
     extra_state = model.preprocess(train_snapshots_scaled_concat) or {}
 
-    extra_state = model.preprocess(train_snapshots_scaled_concat) or {}
-
     if not model.requires_training_loop():
         # ── Modelli non a gradiente (POD-ARX, POD-NARX) ──────────────────
         print(f"\n[{model_name}] Fit closed-form (no gradient loop) ...")

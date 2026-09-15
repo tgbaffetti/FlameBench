@@ -194,6 +194,14 @@ class BaseForecastModel(nn.Module):
         """Step opzionale non-gradiente (es. fit POD). Ritorna dict da salvare nel checkpoint."""
         return {}
 
+    def requires_training_loop(self) -> bool:
+        """False per modelli fittati in forma chiusa (es. POD-ARX)."""
+        return True
+
+    def fit_closed_form(self, train_dataset) -> dict:
+        """Implementato solo da modelli con requires_training_loop()=False."""
+        raise NotImplementedError
+
     def compute_loss(self, x_window: torch.Tensor, phi_window: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
 
@@ -306,27 +314,7 @@ class AETransformerModel(BaseForecastModel):
         )
         return model.to(device)
 
-class BaseForecastModel(nn.Module):
-    def preprocess(self, train_snapshots: np.ndarray) -> dict:
-        return {}
 
-    def requires_training_loop(self) -> bool:
-        """False per modelli fittati in forma chiusa (es. POD-ARX)."""
-        return True
-
-    def fit_closed_form(self, train_dataset) -> dict:
-        """Implementato solo da modelli con requires_training_loop()=False."""
-        raise NotImplementedError
-
-    def compute_loss(self, x_window, phi_window):
-        raise NotImplementedError
-
-    def extra_checkpoint_data(self) -> dict:
-        return {}
-
-    @classmethod
-    def from_config(cls, cfg, nf, n_cells, n_past, device):
-        raise NotImplementedError
 
 class LSTMModel(BaseForecastModel):
     """
