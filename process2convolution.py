@@ -62,8 +62,9 @@ for f in range(n_features):
 
 Data_tensor = Data_tensor[:, :, ::-1, :]  # same Z flip as original script
 
-print('--> Data_tensor shape:', Data_tensor.shape)
+print('--> Data_tensor shape: [nt, nf, nz, nx] =', Data_tensor.shape)
 
+"""
 # --- visual check ---
 i_T = features.index('T')
 plt.imshow(Data_tensor[1000, i_T, :, :], cmap='hot_r')
@@ -74,6 +75,7 @@ i_OH = features.index('OH')
 plt.imshow(Data_tensor[1000, i_OH, :, :], cmap='hot_r')
 plt.savefig("delete_OH_check_plot.png", dpi=300, bbox_inches="tight")
 plt.close()
+"""
 
-# np.save('data_ready_for_Transformer/step_A03_native.npy', Data_tensor)
+np.save('data4convolution/step_A03.npy', Data_tensor)
 print('--> SAVED FILE!')
