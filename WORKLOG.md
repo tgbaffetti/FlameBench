@@ -168,6 +168,13 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
   help phi coupling.
 - Launched the stabilizer recipe (residual + noise 0.01) for MGN (GPU 2) and Transolver
   (GPU 0). Transolver+pushforward still training on GPU 1.
+- Transolver + residual + noise **failed**: passed the fit gate with a finite-but-absurd val
+  rollout MSE (8e20), then went nonfinite in the test rollout. Two lessons: (a) residual+noise
+  alone does not stabilize Transolver, (b) the divergence gate should bound the score, not just
+  check finiteness (protocol TODO). Full recipe launched instead:
+  `identity_transolver_pf4res.json` (pushforward-4 + residual + noise).
+- New metrics live (commit earlier): horizon-binned nRMSE + `restart_every` windowed protocol;
+  CPU re-evaluation pass over 5 saved models running (free rollout + one-step each).
 
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
