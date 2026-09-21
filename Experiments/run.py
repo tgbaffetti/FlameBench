@@ -125,9 +125,15 @@ def fit(config, resume=False):
         model = MODELS[name](rank=compressor.rank, Nx=cfg["Nx"], Ni=cfg["Ni"], device=cfg.get("device", "cpu"), **mc)
         model.fit(loader(train_z, cfg, shuffle=name not in {"arx", "narx", "persistence"}), loader(val_z, cfg),
                   logger=logger, directory=directory, resume=resume)
-        score = validation_rollout(model, val_z, window=cfg.get("validation_window"))
-        if not np.isfinite(score):
-            raise FloatingPointError("Validation rollout diverged; model not eligible for selection")
+        window = cfg.get("validation_window")
+        score = validation_rollout(model, val_z, window=window)
+        # Gate against the frozen-state reference: finiteness alone lets through
+        # astronomically bad but finite rollouts (observed up to 1e42).
+        reference = validation_rollout(Constant(), val_z, window=window)
+        bound = cfg.get("divergence_factor", 100) * max(reference, np.finfo(np.float64).tiny)
+        if not np.isfinite(score) or score > bound:
+            raise FloatingPointError(
+                f"Validation rollout diverged ({score:.3g} > {bound:.3g}); model not eligible for selection")
         logger.log({"validation/rollout_latent_mse": score}, cfg["model"].get("epochs", 0))
         if hasattr(model, "network"):
             model.network.cpu()

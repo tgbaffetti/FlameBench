@@ -71,6 +71,7 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
         if save_predictions:
             output = np.lib.format.open_memmap(directory / f"{case['name']}_predictions{suffix}.npy", mode="w+",
                        dtype="float32", shape=(hi-first, *dataset.field_shape))
+        diverged_at = None
         for k in range(first, hi):
             if (restart_every and k > first and (k - first) % restart_every == 0
                     and k - dataset.history >= lo):
@@ -79,11 +80,21 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
             synchronize(model)
             begin = time.perf_counter()
             z = model.predict(history, forcing)
+            # Divergence is a reportable outcome, not an abort: keep the metrics
+            # accumulated so far and move on to the next case. The latent check
+            # runs before decoding because sklearn decoders reject nonfinite input.
+            if not np.isfinite(z).all():
+                diverged_at = k - first
+                break
             predicted = scaler.inverse(compressor.decode(z))[0]
             synchronize(model)
             elapsed += time.perf_counter()-begin
             reference = np.array(x[k])
-            metrics.update(predicted, reference)
+            try:
+                metrics.update(predicted, reference)
+            except FloatingPointError:
+                diverged_at = k - first
+                break
             if output is not None:
                 output[k-first] = predicted
             if volumes is not None:
@@ -93,7 +104,13 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
         if output is not None:
             output.flush()
             del output
-        result = metrics.result()
+        result = metrics.result() if metrics.step else {}
+        result.update({"status": "diverged", "diverged_at_step": diverged_at} if diverged_at is not None
+                      else {"status": "completed"})
+        if diverged_at is not None:
+            results[case["name"]] = result
+            write_json(directory / f"metrics{suffix}.json", results)
+            continue
         result.update({"forecast_steps": hi-first, "first_predicted_index": first,
                        "inference_seconds": elapsed, "seconds_per_step": elapsed/(hi-first),
                        "timing_scope": "latent transition + field decoding + inverse scaling; excludes initial encoding, IO, metrics",

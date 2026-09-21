@@ -528,3 +528,37 @@ def test_max_steps_truncates_horizon(metadata,tmp_path):
     assert (tmp_path/'eval'/'metrics_h20.json').exists()
     with pytest.raises(ValueError,match='max_steps'):
         evaluate(Frozen(),test_data,pod,scaler,tmp_path/'eval',heat_release=False,max_steps=0)
+
+
+def test_divergence_gate_bounds_score(metadata,tmp_path,monkeypatch):
+    import Experiments.run as run_module
+    cfg={'metadata':metadata,'output':str(tmp_path),'run_name':'gate','seed':0,'device':'cpu',
+         'validation_fraction':0.2,'batch_size':8,'Nx':0,'Ni':0,
+         'compressor':{'name':'pod','rank':2,'batch_size':8},'model':{'name':'arx','alpha':1e-8},
+         'logging':{'wandb':{'mode':'disabled'}}}
+    class Amplifier:
+        def fit(self,training,validation=None,**kwargs):
+            return self
+        def predict(self,history,forcing):
+            return np.asarray(history[:,-1])*1.5  # finite for a while, astronomically bad
+    monkeypatch.setitem(run_module.MODELS,'arx',lambda **kw:Amplifier())
+    monkeypatch.setattr(run_module,'load_metadata',lambda p:p)
+    with pytest.raises(FloatingPointError,match='diverged'):
+        run_module.fit(cfg)
+
+
+def test_evaluate_records_divergence_and_continues(metadata,tmp_path):
+    train=TrainingDataset(metadata,Nx=0,Ni=0)
+    scaler=FeatureScaler().fit(train.snapshot_batches())
+    pod=POD(rank=2,batch_size=8).fit(train,scaler)
+    class Amplifier:
+        def predict(self,history,forcing):
+            return np.asarray(history[:,-1])*10
+    results=evaluate(Amplifier(),TestDataset(metadata,Nx=0,Ni=0),pod,scaler,tmp_path/'eval',
+                     heat_release=False)
+    case=results['sine']
+    assert case['status']=='diverged' and case['diverged_at_step']>0
+    # one-step protocol still works for the same model
+    onestep=evaluate(Amplifier(),TestDataset(metadata,Nx=0,Ni=0),pod,scaler,tmp_path/'eval',
+                     heat_release=False,restart_every=1)
+    assert onestep['sine']['status']=='completed'
