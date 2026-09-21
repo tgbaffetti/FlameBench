@@ -151,6 +151,7 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
 | deeponet single-step | 0.55–1.11 | 19–204 |
 | transolver single-step | ~1.4 | 19–29 |
 | 0-D MLP (q' only) | — | **0.0015–0.022** |
+| 0-D GRU (q' only) | — | 0.006–0.039; f40 FTF much worse than MLP (gain err ~0.65) |
 - deeponet+pf4 (no residual/noise) hit the divergence gate and was refused; +residual+noise
   passes it with the best val rollout MSE so far (0.131) and competitive fields.
 - **Finding:** decent field nRMSE can coexist with garbage q' — mix:Q nRMSE is 0.50 while q'
