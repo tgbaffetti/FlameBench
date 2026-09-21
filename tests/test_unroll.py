@@ -92,3 +92,11 @@ def test_residual_and_noise():
     assert len(eval_losses) == 1 and len(train_losses) == 3
     with pytest.raises(ValueError, match="noise_std"):
         GRU(rank=RANK, Nx=2, Ni=1, hidden=8, layers=1, device="cpu", noise_std=-1)
+
+
+def test_old_pickles_without_stabilizer_attrs_still_predict():
+    model = GRU(rank=RANK, Nx=2, Ni=1, hidden=8, layers=1, device="cpu")
+    del model.__dict__["residual"], model.__dict__["noise_std"]  # simulate a pre-stabilizer pickle
+    predicted = model.predict(np.zeros((2, 3, RANK), dtype=np.float32),
+                              np.ones((2, 3), dtype=np.float32))
+    assert predicted.shape == (2, RANK)

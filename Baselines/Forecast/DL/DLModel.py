@@ -10,6 +10,9 @@ from ..Model import Model
 class DLModel(Model):
     hyperparams = {"lr": {"value": 0.001, "type": "float", "low": 1e-5, "high": 3e-3, "log": True},
                    "hidden": {"value": 64, "type": "categorical", "choices": [32, 64, 128]}}
+    # Class-level defaults so models pickled before these options existed still unpickle.
+    residual = False
+    noise_std = 0.0
 
     def __init__(self, network, device="cpu", lr=1e-3, epochs=100, patience=20,
                  unroll_grad="none", residual=False, noise_std=0.0, **kwargs):
