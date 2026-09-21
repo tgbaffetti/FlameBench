@@ -140,6 +140,26 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
 - Launched `identity_deeponet_pf4res.json` (pushforward-4 + residual + noise 0.01) on GPU 0.
 - pod_lstm and pod_transformer full runs finished on CPU; zerod_gru training.
 
+## 2026-09-21 — full-run results so far
+| model | field nRMSE (range over 6 test cases) | q' rel-L2 |
+|---|---|---|
+| DMDc | **0.16–0.36** | 0.03–0.21 |
+| persistence | 0.19–0.47 | 0.04–0.38 |
+| pod_transformer | 0.33–0.51 | (re-eval running) |
+| pod_lstm | 0.39–0.81 | 0.15–0.43, FTF gain err ~0.9 |
+| deeponet +pf4+residual+noise | 0.34–0.55 | 59–89 (!) |
+| deeponet single-step | 0.55–1.11 | 19–204 |
+| transolver single-step | ~1.4 | 19–29 |
+| 0-D MLP (q' only) | — | **0.0015–0.022** |
+- deeponet+pf4 (no residual/noise) hit the divergence gate and was refused; +residual+noise
+  passes it with the best val rollout MSE so far (0.131) and competitive fields.
+- **Finding:** decent field nRMSE can coexist with garbage q' — mix:Q nRMSE is 0.50 while q'
+  rel-L2 is ~70: heat release concentrates at the flame front (huge σ), so a small scaled-space
+  bias in Q integrates into a massive q' error. POD-decoded models are implicitly protected
+  (linear projection); identity-space operators are not. Strong argument for q'/FTF as
+  first-class benchmark metrics next to nRMSE.
+- Nothing beats the linear ROM on fields yet; nothing approaches the 0-D baseline on q'.
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.
