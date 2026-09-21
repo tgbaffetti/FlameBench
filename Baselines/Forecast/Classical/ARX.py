@@ -39,10 +39,12 @@ class ARX(Model):
 
 
 class NARX(ARX):
-    """Polynomial NARX: linear terms, squares, and state x forcing bilinear couplings.
+    """Control-affine NARX: linear terms plus state x forcing bilinear couplings.
 
-    The bilinear block is the control-affine structure (z' = A z + B(z) phi) of the
-    forced-ROM literature; ridge fit identical to ARX.
+    z' = A z + b phi + (z x phi) couplings — the control-affine structure of the
+    forced-ROM literature. Linear in the state for fixed phi, so rollouts stay
+    bounded far more readily than with polynomial state terms (a squares variant
+    diverged in validation rollout). Ridge fit identical to ARX.
     """
     name = "narx"
 
@@ -50,9 +52,8 @@ class NARX(ARX):
     def features(history, forcing):
         state = history.reshape(len(history), -1)
         phi = forcing - 1
-        linear = np.column_stack((state, phi))
         cross = (state[:, :, None] * phi[:, None, :]).reshape(len(state), -1)
-        return np.column_stack((linear, np.square(linear), cross, np.ones(len(state))))
+        return np.column_stack((state, phi, cross, np.ones(len(state))))
 
 
 class Constant(Model):

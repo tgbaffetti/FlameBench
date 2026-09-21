@@ -485,10 +485,10 @@ def test_narx_features_and_fit(metadata,tmp_path):
     history=np.ones((3,2,2),dtype=np.float32)
     forcing=np.full((3,3),1.5,dtype=np.float32)
     f=NARX.features(history,forcing)
-    # linear (4+3) + squares (7) + cross (4*3) + bias
-    assert f.shape==(3,7+7+12+1)
+    # linear (4+3) + cross (4*3) + bias
+    assert f.shape==(3,7+12+1)
     np.testing.assert_allclose(f[:, -1],1.0)
-    np.testing.assert_allclose(f[:, 14:26],0.5)  # state(1) x phi'(0.5)
+    np.testing.assert_allclose(f[:, 7:19],0.5)  # state(1) x phi'(0.5)
     train=TrainingDataset(metadata,Nx=2,Ni=1)
     scaler=FeatureScaler().fit(train.snapshot_batches(8))
     pod=POD(rank=2,batch_size=8).fit(train,scaler)

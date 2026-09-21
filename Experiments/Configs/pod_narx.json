@@ -15,7 +15,7 @@
   },
   "model": {
     "name": "narx",
-    "alpha": 0.0001
+    "alpha": 0.01
   },
   "logging": {
     "wandb": {
