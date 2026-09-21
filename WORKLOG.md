@@ -186,6 +186,18 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
   tuned for far shorter rollouts. Launched `identity_mgn_pf4.json` (pushforward, absolute
   target) to fill the ablation grid.
 
+## 2026-09-21 — one-step vs rollout: the headline plot
+New metrics on the single-step operator runs (sine_f10_A03, mean nRMSE):
+| model | one-step | rollout 1-10 | 11-100 | 101-1000 | 1001+ |
+|---|---|---|---|---|---|
+| Transolver | **0.018** | 0.23 | 0.41 | 1.57 | 1.26 |
+| MGN | 0.020 | 0.23 | 0.36 | 0.99 | 1.30 |
+| DeepONet | 0.102 | 0.27 | 0.18 | 0.53 | 0.57 |
+- **Local accuracy anti-correlates with rollout stability**: the best one-step model
+  (Transolver) is the worst in free rollout (70x degradation); the worst one-step model
+  (DeepONet) degrades most gracefully. All three hold through ~step 100, then split.
+  This inversion + the horizon bins is the paper's central stability figure.
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.
