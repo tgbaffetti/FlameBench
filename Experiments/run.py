@@ -109,8 +109,11 @@ def fit(config, resume=False):
             compressor.device = cfg.get("device", "cpu")
             compressor.encoder.to(compressor.device)
             compressor.decoder.to(compressor.device)
-        train_z = LatentDataset(training, compressor, scaler, directory/"latent"/"training")
-        val_z = LatentDataset(validation, compressor, scaler, directory/"latent"/"validation")
+        horizon = cfg["model"].get("unroll_steps", 1)
+        if horizon > 1 and cfg["model"]["name"] in {"arx", "persistence"}:
+            raise ValueError("unroll_steps applies to neural models only")
+        train_z = LatentDataset(training, compressor, scaler, directory/"latent"/"training", horizon=horizon)
+        val_z = LatentDataset(validation, compressor, scaler, directory/"latent"/"validation", horizon=horizon)
         mc = cfg["model"].copy()
         name = mc.pop("name")
         model = MODELS[name](rank=compressor.rank, Nx=cfg["Nx"], Ni=cfg["Ni"], device=cfg.get("device", "cpu"), **mc)

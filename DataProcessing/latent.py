@@ -7,8 +7,11 @@ from torch.utils.data import Dataset
 
 
 class LatentDataset(Dataset):
-    def __init__(self, source, compressor, scaler, directory, batch_size=64):
+    def __init__(self, source, compressor, scaler, directory, batch_size=64, horizon=1):
+        if horizon < 1:
+            raise ValueError("horizon must be >= 1")
         self.Nx, self.Ni = source.Nx, source.Ni
+        self.horizon = horizon
         self.history, self.context = source.history, source.context
         self.paths, self.ends, self._maps = [], [], {}
         directory = Path(directory)
@@ -26,7 +29,9 @@ class LatentDataset(Dataset):
             phi_path = directory / f"{case['name']}_{lo}_{hi}_phi.npy"
             np.save(phi_path, np.asarray(phi[lo:hi], dtype=np.float32))
             self.paths.append((str(path), str(phi_path)))
-            total += hi-lo-self.context
+            if hi-lo <= self.context + self.horizon - 1:
+                raise ValueError(f"Segment too short for horizon {self.horizon}: {case['name']}")
+            total += hi-lo-self.context-(self.horizon-1)
             self.ends.append(total)
 
     def __len__(self):
@@ -46,6 +51,13 @@ class LatentDataset(Dataset):
         if k not in self._maps:
             self._maps[k] = tuple(np.load(p, mmap_mode="r") for p in self.paths[k])
         x, phi = self._maps[k]
-        return (torch.from_numpy(np.array(x[start:end])),
-                torch.from_numpy(np.array(phi[end-self.Ni-1:end+1])),
-                torch.from_numpy(np.array(x[end])))
+        history = torch.from_numpy(np.array(x[start:end]))
+        if self.horizon == 1:
+            return (history,
+                    torch.from_numpy(np.array(phi[end-self.Ni-1:end+1])),
+                    torch.from_numpy(np.array(x[end])))
+        # Unrolled sample: one forcing window and one target per rollout step.
+        forcing = np.stack([phi[end+j-self.Ni-1:end+j+1] for j in range(self.horizon)])
+        return (history,
+                torch.from_numpy(forcing),
+                torch.from_numpy(np.array(x[end:end+self.horizon])))

@@ -100,6 +100,13 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
   noise injection deferred to the stabilization ablation). Registered as "meshgraphnet";
   config `identity_mgn.json` (batch 2, cuda). 4 tests incl. message-propagation check; green.
 
+## 2026-09-21 — step 6: pushforward/unrolled-training ablation
+- `LatentDataset(horizon=k)` yields per-sample forcing windows and targets for k rollout steps;
+  `DLModel.compute_loss` unrolls with `unroll_grad="none"` (pushforward, detached restart —
+  the default) or `"full"` (backprop through the rollout). Config: `"unroll_steps"` and
+  `"unroll_grad"` under `model` in any neural config; classical models are guarded.
+- 4 new tests (`tests/test_unroll.py`), no regressions elsewhere.
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.

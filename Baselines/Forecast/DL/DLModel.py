@@ -11,10 +11,27 @@ class DLModel(Model):
     hyperparams = {"lr": {"value": 0.001, "type": "float", "low": 1e-5, "high": 3e-3, "log": True},
                    "hidden": {"value": 64, "type": "categorical", "choices": [32, 64, 128]}}
 
-    def __init__(self, network, device="cpu", lr=1e-3, epochs=100, patience=20, **kwargs):
+    def __init__(self, network, device="cpu", lr=1e-3, epochs=100, patience=20,
+                 unroll_grad="none", **kwargs):
+        if unroll_grad not in {"none", "full"}:
+            raise ValueError("unroll_grad must be 'none' (pushforward) or 'full'")
         self.device = torch.device(device)
         self.network = network.to(self.device)
         self.lr, self.epochs, self.patience = lr, epochs, patience
+        self.unroll_grad = unroll_grad
+
+    def compute_loss(self, history, forcing, target):
+        """Single-step MSE, or the mean over an unrolled rollout when the batch
+        carries (batch, horizon, ...) forcing/targets (pushforward detaches)."""
+        if target.dim() == 2:
+            return nn.functional.mse_loss(self.network(history, forcing), target)
+        loss = 0
+        for k in range(target.shape[1]):
+            predicted = self.network(history, forcing[:, k])
+            loss = loss + nn.functional.mse_loss(predicted, target[:, k])
+            step = predicted.detach() if self.unroll_grad == "none" else predicted
+            history = torch.cat((history[:, 1:], step[:, None]), dim=1)
+        return loss / target.shape[1]
 
     def fit(self, training, validation=None, logger=None, directory=None, resume=False, **kwargs):
         if validation is None:
@@ -40,7 +57,7 @@ class DLModel(Model):
             for history, forcing, target in training:
                 history, forcing, target = [x.to(self.device) for x in (history, forcing, target)]
                 optimizer.zero_grad(set_to_none=True)
-                loss = nn.functional.mse_loss(self.network(history, forcing), target)
+                loss = self.compute_loss(history, forcing, target)
                 if not torch.isfinite(loss):
                     raise FloatingPointError("Nonfinite training loss")
                 loss.backward()
@@ -53,7 +70,7 @@ class DLModel(Model):
             with torch.no_grad():
                 for history, forcing, target in validation:
                     history, forcing, target = [x.to(self.device) for x in (history, forcing, target)]
-                    loss = nn.functional.mse_loss(self.network(history, forcing), target)
+                    loss = self.compute_loss(history, forcing, target)
                     val_total += loss.item() * len(history)
                     val_count += len(history)
             value = val_total / val_count
