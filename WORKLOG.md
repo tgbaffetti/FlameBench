@@ -161,6 +161,14 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
   first-class benchmark metrics next to nRMSE.
 - Nothing beats the linear ROM on fields yet; nothing approaches the 0-D baseline on q'.
 
+## 2026-09-21 (evening) — MGN result + stabilizer sweep
+- MGN full run (single-step, no stabilizers; early-stopped ~epoch 45): nRMSE 1.11–1.34,
+  q' rel-L2 2.8–3.8 — drifts like the other operators, BUT best forcing response of any
+  field model (FTF gain err 0.34–0.74 vs ~0.95 for latent models). Graph locality seems to
+  help phi coupling.
+- Launched the stabilizer recipe (residual + noise 0.01) for MGN (GPU 2) and Transolver
+  (GPU 0). Transolver+pushforward still training on GPU 1.
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.
