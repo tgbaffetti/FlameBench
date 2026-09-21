@@ -19,6 +19,7 @@ from Baselines.Forecast.Classical.ARX import ARX, Constant
 from Baselines.Forecast.DL.networks import GRU, LSTM, Transformer
 from Baselines.Forecast.DL.deeponet import DeepONet
 from Baselines.Forecast.DL.transolver import Transolver
+from Baselines.Forecast.DL.meshgraphnet import MeshGraphNet
 from .logging import ExperimentLogger
 from .paths import new_run_name, run_directory
 from .evaluation import evaluate
@@ -26,7 +27,7 @@ from utils import seed_everything, write_json, provenance
 
 COMPRESSORS = {"pod": POD, "ae": AE, "vae": VAE, "identity": Identity}
 MODELS = {"arx": ARX, "persistence": Constant, "gru": GRU, "lstm": LSTM, "transformer": Transformer,
-          "deeponet": DeepONet, "transolver": Transolver}
+          "deeponet": DeepONet, "transolver": Transolver, "meshgraphnet": MeshGraphNet}
 
 
 def dump(path, value):

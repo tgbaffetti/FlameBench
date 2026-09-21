@@ -7,6 +7,8 @@ Writes, next to the metadata file:
 - grid_indices.npz: col_idx/row_idx (n_cells,) int64 mapping cell -> (x, z) pixel, plus
   nx, nz, x_vals, z_vals. Same rounding-based binning as process4convolution.py; pixels
   not covered by any cell (the angled side) stay unassigned.
+- edges.npy: (2, E) int64 directed cell-adjacency (face-sharing neighbors, both directions),
+  for graph models (MeshGraphNets).
 
 Run: python -m DataProcessing.grid [--grid data/grid.vtu] [--metadata Data/metadata.json]
 Then reference the files from the metadata ("cell_volumes", "coordinates", "grid_indices").
@@ -35,7 +37,12 @@ def derive(grid_path):
     np.add.at(counts, (col_idx, row_idx), 1)
     if counts.max() > 1:
         raise ValueError("Two cells map to one pixel; increase DECIMALS resolution")
-    return {"cell_volumes": volumes, "coordinates": centers,
+    edges = [(i, j) for i in range(grid.n_cells)
+             for j in grid.cell_neighbors(i, connections="faces")]
+    edges = np.array(edges, dtype=np.int64).T
+    if edges.shape[0] != 2 or not len(set(map(tuple, edges.T))) == edges.shape[1]:
+        raise ValueError("Malformed cell adjacency")
+    return {"cell_volumes": volumes, "coordinates": centers, "edges": edges,
             "grid_indices": {"col_idx": col_idx, "row_idx": row_idx,
                              "nx": len(x_vals), "nz": len(z_vals),
                              "x_vals": x_vals, "z_vals": z_vals}}
@@ -50,10 +57,12 @@ def main():
     derived = derive(args.grid)
     np.save(out / "cell_volumes.npy", derived["cell_volumes"])
     np.save(out / "coordinates.npy", derived["coordinates"])
+    np.save(out / "edges.npy", derived["edges"])
     np.savez(out / "grid_indices.npz", **derived["grid_indices"])
     g = derived["grid_indices"]
     print(f"{len(derived['cell_volumes'])} cells -> {out}; image {g['nx']}x{g['nz']}, "
-          f"coverage {len(derived['cell_volumes'])/(g['nx']*g['nz']):.1%}")
+          f"coverage {len(derived['cell_volumes'])/(g['nx']*g['nz']):.1%}, "
+          f"{derived['edges'].shape[1]} directed edges")
 
 
 if __name__ == "__main__":

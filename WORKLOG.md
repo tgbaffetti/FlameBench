@@ -92,6 +92,14 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
   finite, q'/FTF columns computed, 1.3 ms/step on the L40S. Accuracy poor as expected at
   2 epochs (mean nRMSE ~0.5); real training happens in the big runs.
 
+## 2026-09-21 — step 5: MeshGraphNets
+- `DataProcessing/grid.py` now also extracts true face-adjacency cell edges from grid.vtu
+  (`Data/edges.npy`, 84,704 directed edges, ~4 per cell).
+- `Baselines/Forecast/DL/meshgraphnet.py`: encode-process-decode with residual edge/node message
+  passing (8 passes, dim 128); phi as global node channels; absolute scaled target (delta +
+  noise injection deferred to the stabilization ablation). Registered as "meshgraphnet";
+  config `identity_mgn.json` (batch 2, cuda). 4 tests incl. message-propagation check; green.
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.

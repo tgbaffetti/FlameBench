@@ -26,6 +26,13 @@ def test_derive_volumes_coordinates_indices(tmp_path):
     assert len(pixels) == grid.n_cells
     assert np.allclose(g["x_vals"][g["col_idx"]], np.round(out["coordinates"][:, 0], 8))
     assert np.allclose(g["z_vals"][g["row_idx"]], np.round(out["coordinates"][:, 2], 8))
+    edges = out["edges"]
+    # 3x2 planar cell grid: 2*(2*horizontal + 3*vertical... ) -> count via pixel adjacency
+    assert edges.shape[0] == 2 and edges.shape[1] == 2 * 7
+    assert (edges[0] != edges[1]).all()
+    # symmetric: every directed edge has its reverse
+    pairs = set(map(tuple, edges.T))
+    assert all((b, a) in pairs for a, b in pairs)
 
 
 def test_derive_rejects_nonplanar(tmp_path):
