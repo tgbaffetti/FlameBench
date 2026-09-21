@@ -1,0 +1,183 @@
+\documentclass[10pt]{beamer}
+\usetheme{Madrid}
+\usecolortheme{seahorse}
+\setbeamertemplate{navigation symbols}{}
+\usepackage{booktabs}
+
+\title[FlameBench status]{FlameBench: benchmarking surrogates for forced reacting flows}
+\subtitle{Status \& method selection --- ICLR benchmark paper}
+\author{Gianmarco Paldino}
+\date{September 21, 2026}
+
+\begin{document}
+
+\begin{frame}
+  \titlepage
+\end{frame}
+
+\begin{frame}{The problem}
+  \begin{itemize}
+    \item CFD of a \textbf{forced flame}: inflow modulated by an exogenous signal $\varphi(t)$;
+          solver outputs 11 fields (T, velocities, p, species, heat release) on an
+          \textbf{unstructured mesh} of 21{,}334 cells, $\Delta t = 0.5$\,ms, 4001 steps per case.
+    \item Goal: a \textbf{learned surrogate} --- given recent states and $\varphi(t)$, predict the
+          next snapshot, then \emph{roll out autoregressively} for thousands of steps.
+          Milliseconds instead of cluster-days per forcing scenario.
+    \item \textbf{Generalization protocol}: train on 2 frequency-\emph{sweep} cases
+          (1$\to$80\,Hz, amplitudes 0.2/0.4); test on 6 \emph{unseen} cases:
+          pure tones (10/40\,Hz $\times$ A03/A05) and steps (A03/A05).
+    \item Gap vs.\ existing benchmarks (PDEBench, The Well, BLASTNet, REALM):
+          \textbf{exogenously forced} combustion, time-varying input, unstructured mesh.
+    \item Paper budget: 9 pages (ICLR) $\Rightarrow$ \emph{minimal} method set:
+          one representative per family, mesh-native, natural $\varphi(t)$ injection.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Family 1: trivial \& linear baselines --- Persistence, DMDc}
+  \textbf{Chosen:} persistence (predict last state) and DMDc = POD projection + ridge-linear
+  one-step map with control input $\varphi$.
+  \begin{itemize}
+    \item \textbf{Why persistence:} the floor. A model that cannot beat ``tomorrow = today''
+          has learned nothing.
+    \item \textbf{Why DMDc:} the ``do we need deep learning?'' check --- assumes the flame
+          responds \emph{linearly} to forcing. Where it wins, the task was easy; where it
+          fails, nonlinear models must earn their keep.
+    \item Zero implementation cost: existing POD+ARX with history $N_x{=}0$, $N_i{=}0$.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Family 2: latent ROM + sequence model --- POD/AE $\times$ LSTM/Transformer}
+  \textbf{Chosen:} compress each snapshot to rank-16 latents (POD or autoencoder), forecast the
+  latent trajectory with GRU/LSTM/Transformer conditioned on $\varphi$.
+  \begin{itemize}
+    \item \textbf{Why:} the dominant recipe in fluids ROM literature
+          (POD-DL-ROM, $\beta$-VAE-Transformer, UP-dROM, POD-LSTM for LES combustion) ---
+          the community expects it, and it is what practitioners actually deploy.
+    \item Already implemented in the repo (Carlo's pipeline); benchmark cost $\approx$ zero.
+    \item Linear decode (POD) turns out to protect integral quantities --- see results.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Family 3: 0-D domain baseline --- flame-response models}
+  \textbf{Chosen:} MLP and GRU mapping a 256-tap window of $\varphi'(t)$ directly to normalized
+  integrated heat release $q'(t)/\bar q$. No fields, no mesh.
+  \begin{itemize}
+    \item \textbf{Why:} it is the combustion community's \emph{own} baseline
+          (MLP flame response, PI-LSTM, dual-path FTF models) and grounds our FTF metrics.
+    \item If a million-parameter field model cannot beat this tiny filter on the quantity
+          engineers care about, that is a headline result. (It currently cannot.)
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Family 4: classic neural operator --- DeepONet}
+  \textbf{Chosen:} DeepONet (Lu et al.\ 2021): branch net = field history sampled at 2048 fixed
+  sensor cells + $\varphi$ window; trunk net = cell coordinates $\to$ 64 basis functions.
+  \begin{itemize}
+    \item \textbf{Why:} the founding architecture of the operator-learning school ---
+          reviewers expect it like chemists expect a control group.
+    \item Mesh-native by construction (trunk evaluates at arbitrary coordinates);
+          $\varphi$ enters the branch naturally.
+    \item Low integration effort on our identity-compressor field path.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Family 5: modern transformer operator --- Transolver}
+  \textbf{Chosen:} Transolver (Wu et al.\ 2024): physics attention --- cells softly assigned to
+  32 learned slices, attention over slice tokens (linear in \#cells), broadcast back.
+  \begin{itemize}
+    \item \textbf{Why:} current state of the art of the same school; classic + current gives
+          the operator family a fair before/after.
+    \item $\varphi$ injected as per-point input channels; handles the irregular point cloud
+          without interpolation.
+    \item Cut instead: GNOT, UPT, GINO, AROMA, RO-NORM --- same family, higher cost,
+          no expected change in conclusions.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Family 6: graph network --- MeshGraphNets}
+  \textbf{Chosen:} MeshGraphNets (Pfaff et al.\ 2021): encode--process--decode message passing
+  over the true face-adjacency cell graph (84{,}704 directed edges extracted from the CFD mesh).
+  \begin{itemize}
+    \item \textbf{Why:} our data lives on an irregular mesh --- GNNs are \emph{the} family built
+          for exactly that; on this dataset a reviewer would demand it.
+    \item $\varphi$ as global node channels; its stabilizers (residual target, training-noise
+          injection) double as our protocol ablation.
+    \item Cut instead: BSMS-GNN, EAGLE, MP-PDE (same family). CNN/FNO on a rasterized
+          104$\times$206 grid (99.6\% coverage) kept as a later \emph{ablation}: does the
+          mesh even matter?
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Evaluation metrics}
+  All computed on \textbf{full autoregressive rollouts}: steady start, $\sim$4000 steps driven
+  only by $\varphi(t)$; divergence gate disqualifies exploding models.
+  \begin{block}{Field metrics}
+    \begin{itemize}
+      \item \textbf{nRMSE per field} (11 fields + mean): RMSE normalized by the field's
+            temporal-spatial std. 0 = perfect, $\approx$1 = no better than a constant.
+      \item \textbf{Inference time per step} (the point of a surrogate).
+    \end{itemize}
+  \end{block}
+  \begin{block}{Engineering metrics (our differentiator)}
+    \begin{itemize}
+      \item \textbf{$q'$ relative $L_2$}: volume-integrated heat release over time ---
+            \emph{the} signal for thermoacoustics.
+      \item \textbf{FTF gain \& phase error} (pure-tone cases): amplification and delay of the
+            $\varphi \to q'$ response at the forcing frequency. Gain error $\approx 1$ means
+            ``ignores the forcing''.
+    \end{itemize}
+  \end{block}
+  Fairness: fixed splits, validation-only model selection, same steady-start protocol for all.
+\end{frame}
+
+\begin{frame}{Results so far (single seed, first full runs)}
+  \centering
+  \begin{tabular}{lccc}
+    \toprule
+    Model & field nRMSE & $q'$ rel-$L_2$ & FTF gain err \\
+    \midrule
+    DMDc (linear)            & \textbf{0.16--0.36} & 0.03--0.21 & 0.50--0.89 \\
+    Persistence              & 0.19--0.47 & 0.04--0.38 & --- \\
+    POD+Transformer          & 0.33--0.51 & 0.07--0.38 & $\approx$0.95 \\
+    POD+LSTM                 & 0.39--0.81 & 0.15--0.43 & $\approx$0.9 \\
+    DeepONet (single-step)   & 0.55--1.11 & 19--204 & $\gg$1 \\
+    DeepONet (+pf+res+noise) & 0.34--0.55 & 59--89 & $\gg$1 \\
+    Transolver (single-step) & $\approx$1.4 & 19--29 & $\gg$1 \\
+    0-D MLP ($q'$ only)      & --- & \textbf{0.002--0.022} & \textbf{0.002--0.13} \\
+    0-D GRU ($q'$ only)      & --- & 0.006--0.039 & weak at 40 Hz \\
+    \alert{MeshGraphNets}    & \multicolumn{3}{c}{\alert{training (GPU 2, ETA $\sim$20:45)}} \\
+    \alert{Transolver +pushforward} & \multicolumn{3}{c}{\alert{training (GPU 1, ETA $\sim$21:30)}} \\
+    \bottomrule
+  \end{tabular}
+  \vspace{0.5em}
+  \begin{itemize}
+    \item Nothing beats the \textbf{linear ROM} on fields yet; nothing approaches the
+          \textbf{0-D baseline} on $q'$.
+    \item Neural field models largely \textbf{ignore the forcing} (gain err $\approx$ 0.95).
+    \item Decent field nRMSE can coexist with useless $q'$: bias at the flame front
+          integrates catastrophically; POD decoding implicitly protects against this.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Next steps \& ETAs}
+  \begin{itemize}
+    \item \textbf{Tonight} --- MeshGraphNets result ($\sim$20:45); Transolver+pushforward
+          ($\sim$21:30); worst-case timings, early stopping may shorten both.
+    \item \textbf{New metrics} ($\sim$1.5\,h of work + cheap re-evaluation of saved models):
+      \begin{itemize}
+        \item \emph{Horizon-binned nRMSE}: error over steps 1--10, 10--100, 100--1000,
+              1000--4000 instead of one pooled number --- where does each model fall off?
+        \item \emph{One-step vs.\ windowed rollout}: score with ground-truth restarts
+              (window $k$) to separate local accuracy from compounding instability.
+      \end{itemize}
+    \item \textbf{Stabilizer sweep}: Transolver/MGN + residual + noise + pushforward
+          (recipe that already rescued DeepONet's rollout); $\sim$0.5--2\,h each on free GPUs.
+    \item \textbf{CNN/grid track} (ablation: does the mesh matter?): adapt Tommaso's
+          rasterization + conv-AE compressor --- next session.
+    \item \textbf{Multi-seed} repeats + AE/VAE compressor runs $\to$ error bars for the paper.
+    \item Paper assets: FTF gain/phase plots vs.\ frequency, $q'(t)$ traces
+          (already saved per run), results table auto-generation.
+  \end{itemize}
+\end{frame}
+
+\end{document}
