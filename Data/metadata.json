@@ -27,8 +27,9 @@
     "1"
   ],
   "initial_snapshot_is_steady": true,
-  "cell_volumes": null,
-  "coordinates": null,
+  "cell_volumes": "cell_volumes.npy",
+  "coordinates": "coordinates.npy",
+  "grid_indices": "grid_indices.npz",
   "forcing_definition": "U(t) = U_base * phi(t); nondimensional phi",
   "cases": [
     {

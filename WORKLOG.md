@@ -39,6 +39,17 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
   as stretch). Script needs adapting to read the prepared float32 `(t, f, cells)` npy instead of
   raw npy. Queued after the mesh-native minimal set.
 
+## 2026-09-21 — step 1: linear baselines + grid-derived quantities
+- Added `Experiments/Configs/pod_dmdc.json` (`pod`+`arx`, Nx=0, Ni=0 — exactly DMDc) and
+  `pod_persistence.json`. Full-pipeline smoke run (fit+test on all 8 prepared cases) launched.
+- New `DataProcessing/grid.py`: derives `Data/cell_volumes.npy` (abs volumes; 206 source cells
+  have inverted orientation), `Data/coordinates.npy` (cell centers) and `Data/grid_indices.npz`
+  (cell→pixel map, image 104×206, 99.6% coverage) from `data/grid.vtu`. Referenced from
+  `Data/metadata.json`; this unlocks the q'/FTF metrics in `Experiments/evaluation.py`
+  (heat_release now true in the new configs) and the DeepONet trunk + CNN track.
+  Files are gitignored — regenerate with `python -m DataProcessing.grid`.
+- Tests: 2 new in `tests/test_grid.py`; suite green (50 total).
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.

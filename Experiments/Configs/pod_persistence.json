@@ -1,0 +1,34 @@
+{
+  "metadata": "Data/metadata.json",
+  "output": "Experiments/Results",
+  "seed": 42,
+  "device": "cpu",
+  "cpu_threads": 4,
+  "validation_fraction": 0.2,
+  "batch_size": 64,
+  "workers": 0,
+  "preprocessing_batch_size": 64,
+  "compressor": {
+    "name": "pod",
+    "rank": 16,
+    "batch_size": 64
+  },
+  "model": {
+    "name": "persistence"
+  },
+  "logging": {
+    "wandb": {
+      "mode": "offline",
+      "project": "rom-flamebench",
+      "entity": "FireMark"
+    }
+  },
+  "evaluation": {
+    "heat_release": true,
+    "initialization": "steady",
+    "gain_phase_start": 0.5,
+    "save_predictions": false
+  },
+  "Nx": 0,
+  "Ni": 0
+}
