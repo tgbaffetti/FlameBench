@@ -205,6 +205,11 @@ New metrics on the single-step operator runs (sine_f10_A03, mean nRMSE):
 - deeponet+pf4+res+noise: one-step 0.027, rollout [0.21|0.15|0.35|0.47] — best neural field
   model on fields at every horizon, yet q' still garbage. The fields-vs-integral decoupling
   is systematic, not an artifact of bad training.
+- Transolver + pf4 + residual + noise: fails too — horizon bins [0.23|0.27|10.7|7.7e6]: healthy
+  to ~step 100, then explodes. **Transolver is 0-for-4 stabilizer recipes** at this rollout
+  length; the same recipe rescued DeepONet. Hypothesis for the paper: DeepONet's global
+  trunk-basis output regularizes rollouts where Transolver's per-point head does not.
+  (Gate TODO again: val score 35.7, finite, slipped through.)
 
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
