@@ -211,6 +211,24 @@ New metrics on the single-step operator runs (sine_f10_A03, mean nRMSE):
   trunk-basis output regularizes rollouts where Transolver's per-point head does not.
   (Gate TODO again: val score 35.7, finite, slipped through.)
 
+## 2026-09-22 — final benchmark matrix locked (Gianmarco's spec) + overnight runs
+Matrix: {POD+ARX, POD+NARX, POD+LSTM, POD+Transformer, DeepONet, Transolver} x
+{1-step eval, full-horizon AR eval, flexible k-step training selected on 500-step validation
+windows}. MeshGraphNets **dropped** (its pf4 run was stopped). CAE/VAE compressors replace POD
+in a second pass once Carlo's branch is fixed (his AE.py imports a missing Baselines/losses.py;
+his Compressor contract also moved to image inputs — reconcile before merging; his POD is now
+full randomized SVD, so POD baselines need a re-run after the merge).
+- New: NARX (bilinear/control-affine ridge: linear + squares + state x phi terms, Ni=4);
+  `validation_window` (windowed validation rollout = selection objective for k-step models);
+  `max_steps` eval option (unused for now — full horizon = whole test trajectory; NB our
+  prepared tests are 4001 steps / 2.0 s, not the 2k Tommaso mentioned — check with him).
+- Carlo does NOT have k-step training on his branch (checked); ours (unroll_steps) is used.
+- Overnight queues (each config: fit -> full-AR test -> one-step test, via
+  Experiments/scripts/queue_runner.py): CPU: pod_arx, pod_narx. GPU0: pod_lstm_k{2,8,32},
+  pod_transformer_k{2,8,32}. GPU1: identity_deeponet_k{4,16}. GPU2: identity_transolver_k{4,16}.
+  Operator k-runs are plain (no residual/noise) so the k axis stays clean; epochs 50/patience 10.
+
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.
