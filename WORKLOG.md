@@ -80,6 +80,18 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
   config `identity_deeponet.json` (Nx=4, Ni=4, batch 8, cuda).
 - Tests: 4 new (`tests/test_deeponet.py`); suite 58/58 green. 2-epoch GPU smoke run launched.
 
+## 2026-09-21 — step 4: Transolver + persistence bugfix
+- `Baselines/Forecast/DL/transolver.py`: physics attention (soft assignment of cells to M=32
+  learned slices, attention over slice tokens — linear in cells; simplification vs the paper:
+  one slice assignment shared across heads). phi window enters as per-point channels.
+  Registered as "transolver" with compressor "identity"; config `identity_transolver.json`.
+  4 new tests; suite green.
+- Bug found by the smoke run: `Constant` (persistence) had no `__init__`, so the run.py registry
+  call crashed — persistence was never runnable end to end. Fixed + regression test; smoke rerun.
+- DeepONet 2-epoch GPU smoke (`smoke_deeponet`): pipeline OK end to end — 4000-step rollouts
+  finite, q'/FTF columns computed, 1.3 ms/step on the L40S. Accuracy poor as expected at
+  2 epochs (mean nRMSE ~0.5); real training happens in the big runs.
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.

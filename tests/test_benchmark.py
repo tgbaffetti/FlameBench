@@ -432,3 +432,10 @@ def test_wandb_seed_group_and_resume_id(tmp_path,monkeypatch):
     logger.close()
     assert init.call_args.kwargs['id']==first['id']
     assert init.call_args.kwargs['resume']=='allow'
+
+
+def test_models_construct_with_registry_kwargs():
+    # run.py builds every model as MODELS[name](rank=..., Nx=..., Ni=..., device=..., **mc)
+    from Baselines.Forecast.Classical.ARX import ARX, Constant
+    for cls in (ARX, Constant):
+        cls(rank=3, Nx=0, Ni=0, device="cpu")

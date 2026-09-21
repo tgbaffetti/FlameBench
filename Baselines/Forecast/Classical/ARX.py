@@ -41,6 +41,9 @@ class ARX(Model):
 class Constant(Model):
     name = "constant"
 
+    def __init__(self, **kwargs):
+        pass
+
     def fit(self, training, validation=None, **kwargs):
         return self
 
