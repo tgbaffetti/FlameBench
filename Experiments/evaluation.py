@@ -24,13 +24,16 @@ def synchronize(model):
 
 def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
              initialization="steady", gain_phase_start=0.5, save_predictions=False,
-             restart_every=None):
+             restart_every=None, max_steps=None):
     """restart_every=k re-encodes the observed state every k steps (k=1 is pure
-    one-step evaluation); None rolls out freely from the initial state. Restarted
-    protocols write metrics_restart<k>.json so free-rollout results are kept."""
+    one-step evaluation); None rolls out freely from the initial state. max_steps
+    truncates each rollout to that horizon. Non-default protocols write
+    metrics_restart<k>.json / metrics_h<n>.json so free-rollout results are kept."""
     if restart_every is not None and restart_every < 1:
         raise ValueError("restart_every must be a positive integer or None")
-    suffix = f"_restart{restart_every}" if restart_every else ""
+    if max_steps is not None and max_steps < 1:
+        raise ValueError("max_steps must be a positive integer or None")
+    suffix = (f"_restart{restart_every}" if restart_every else "") + (f"_h{max_steps}" if max_steps else "")
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     metadata = dataset.metadata
@@ -50,6 +53,8 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
     for case, lo, hi in dataset.segments():
         x, phi = dataset.arrays(case)
         first = lo + (1 if initialization == "steady" else dataset.context)
+        if max_steps is not None:
+            hi = min(hi, first + max_steps)
         if initialization == "steady":
             initial = np.repeat(np.array(x[lo:lo+1]), dataset.history, axis=0)
         else:

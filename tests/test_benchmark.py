@@ -478,3 +478,53 @@ def test_restart_every_windowed_rollout(metadata,tmp_path):
     assert onestep['sine']['mean_nrmse']<free['sine']['mean_nrmse']
     with pytest.raises(ValueError,match='restart_every'):
         evaluate(Frozen(),test_data,pod,scaler,tmp_path/'eval',heat_release=False,restart_every=0)
+
+
+def test_narx_features_and_fit(metadata,tmp_path):
+    from Baselines.Forecast.Classical.ARX import NARX
+    history=np.ones((3,2,2),dtype=np.float32)
+    forcing=np.full((3,3),1.5,dtype=np.float32)
+    f=NARX.features(history,forcing)
+    # linear (4+3) + squares (7) + cross (4*3) + bias
+    assert f.shape==(3,7+7+12+1)
+    np.testing.assert_allclose(f[:, -1],1.0)
+    np.testing.assert_allclose(f[:, 14:26],0.5)  # state(1) x phi'(0.5)
+    train=TrainingDataset(metadata,Nx=2,Ni=1)
+    scaler=FeatureScaler().fit(train.snapshot_batches(8))
+    pod=POD(rank=2,batch_size=8).fit(train,scaler)
+    latent=LatentDataset(train,pod,scaler,tmp_path/'latent',batch_size=8)
+    model=NARX(alpha=1e-8).fit(DataLoader(latent,batch_size=8))
+    results=evaluate(model,TestDataset(metadata,Nx=2,Ni=1),pod,scaler,tmp_path/'eval')
+    assert results['sine']['mean_nrmse']<1e-2
+
+
+def test_validation_rollout_window(metadata,tmp_path):
+    from Experiments.run import validation_rollout
+    train=TrainingDataset(metadata,Nx=0,Ni=0)
+    scaler=FeatureScaler().fit(train.snapshot_batches())
+    pod=POD(rank=2,batch_size=8).fit(train,scaler)
+    val=TrainingDataset(metadata,Nx=0,Ni=0,partition='validation')
+    val_z=LatentDataset(val,pod,scaler,tmp_path/'latent')
+    class Frozen:
+        def predict(self,history,forcing):
+            return history[:,-1]
+    free=validation_rollout(Frozen(),val_z)
+    windowed=validation_rollout(Frozen(),val_z,window=2)
+    assert windowed<free
+    with pytest.raises(ValueError,match='window'):
+        validation_rollout(Frozen(),val_z,window=0)
+
+
+def test_max_steps_truncates_horizon(metadata,tmp_path):
+    train=TrainingDataset(metadata,Nx=0,Ni=0)
+    scaler=FeatureScaler().fit(train.snapshot_batches())
+    pod=POD(rank=2,batch_size=8).fit(train,scaler)
+    class Frozen:
+        def predict(self,history,forcing):
+            return history[:,-1]
+    test_data=TestDataset(metadata,Nx=0,Ni=0)
+    results=evaluate(Frozen(),test_data,pod,scaler,tmp_path/'eval',heat_release=False,max_steps=20)
+    assert results['sine']['forecast_steps']==20
+    assert (tmp_path/'eval'/'metrics_h20.json').exists()
+    with pytest.raises(ValueError,match='max_steps'):
+        evaluate(Frozen(),test_data,pod,scaler,tmp_path/'eval',heat_release=False,max_steps=0)

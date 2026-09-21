@@ -15,7 +15,7 @@ from Baselines.OrderReduction.Linear.POD import POD
 from Baselines.OrderReduction.DL.AE import AE
 from Baselines.OrderReduction.DL.VAE import VAE
 from Baselines.OrderReduction.Identity import Identity
-from Baselines.Forecast.Classical.ARX import ARX, Constant
+from Baselines.Forecast.Classical.ARX import ARX, NARX, Constant
 from Baselines.Forecast.DL.networks import GRU, LSTM, Transformer
 from Baselines.Forecast.DL.deeponet import DeepONet
 from Baselines.Forecast.DL.transolver import Transolver
@@ -26,8 +26,9 @@ from .evaluation import evaluate
 from utils import seed_everything, write_json, provenance
 
 COMPRESSORS = {"pod": POD, "ae": AE, "vae": VAE, "identity": Identity}
-MODELS = {"arx": ARX, "persistence": Constant, "gru": GRU, "lstm": LSTM, "transformer": Transformer,
-          "deeponet": DeepONet, "transolver": Transolver, "meshgraphnet": MeshGraphNet}
+MODELS = {"arx": ARX, "narx": NARX, "persistence": Constant, "gru": GRU, "lstm": LSTM,
+          "transformer": Transformer, "deeponet": DeepONet, "transolver": Transolver,
+          "meshgraphnet": MeshGraphNet}
 
 
 def dump(path, value):
@@ -42,14 +43,19 @@ def loader(dataset, cfg, shuffle=False):
                       num_workers=cfg.get("workers", 0), persistent_workers=cfg.get("workers", 0)>0)
 
 
-def validation_rollout(model, latent_dataset):
-    """Selection objective: recursive latent MSE on validation, no test data access."""
+def validation_rollout(model, latent_dataset, window=None):
+    """Selection objective: recursive latent MSE on validation, no test data access.
+    window=w restarts from the observed latents every w steps (windowed rollout)."""
+    if window is not None and window < 1:
+        raise ValueError("window must be a positive integer or None")
     sse = count = 0
     for data_path, phi_path in latent_dataset.paths:
         x, phi = np.load(data_path, mmap_mode="r"), np.load(phi_path, mmap_mode="r")
         first = latent_dataset.context
         history = np.array(x[first-latent_dataset.history:first])[None]
         for k in range(first, len(x)):
+            if window and k > first and (k - first) % window == 0:
+                history = np.array(x[k-latent_dataset.history:k])[None]
             forcing = np.array(phi[k-latent_dataset.Ni-1:k+1], dtype=np.float32)[None]
             predicted = model.predict(history, forcing)
             if not np.isfinite(predicted).all():
@@ -117,9 +123,9 @@ def fit(config, resume=False):
         mc = cfg["model"].copy()
         name = mc.pop("name")
         model = MODELS[name](rank=compressor.rank, Nx=cfg["Nx"], Ni=cfg["Ni"], device=cfg.get("device", "cpu"), **mc)
-        model.fit(loader(train_z, cfg, shuffle=name not in {"arx", "persistence"}), loader(val_z, cfg),
+        model.fit(loader(train_z, cfg, shuffle=name not in {"arx", "narx", "persistence"}), loader(val_z, cfg),
                   logger=logger, directory=directory, resume=resume)
-        score = validation_rollout(model, val_z)
+        score = validation_rollout(model, val_z, window=cfg.get("validation_window"))
         if not np.isfinite(score):
             raise FloatingPointError("Validation rollout diverged; model not eligible for selection")
         logger.log({"validation/rollout_latent_mse": score}, cfg["model"].get("epochs", 0))
@@ -127,7 +133,8 @@ def fit(config, resume=False):
             model.network.cpu()
             model.device = torch.device("cpu")
         dump(directory/"model.pkl", model)
-        write_json(directory/"summary.json", {"validation_rollout_latent_mse": score})
+        write_json(directory/"summary.json", {"validation_rollout_latent_mse": score,
+                                              "validation_window": cfg.get("validation_window")})
         return score
     finally:
         logger.close()
