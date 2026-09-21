@@ -180,6 +180,11 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
   0-for-3 single-stabilizer recipes; the combined pf4+residual+noise run is its last shot.
 - GPU 1 re-evaluation pass launched: horizon curves + one-step protocol for the three
   single-step operator runs (deeponet/transolver/mgn).
+- MGN + residual + noise: **worse** than plain MGN in rollout (nRMSE ~4.3 vs ~1.2, q' in the
+  hundreds) despite similar val score. Reading: delta targets integrate bias linearly over
+  4000 steps; absolute targets get pulled back to the manifold. The MGN paper's recipe was
+  tuned for far shorter rollouts. Launched `identity_mgn_pf4.json` (pushforward, absolute
+  target) to fill the ablation grid.
 
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
