@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 
 
 class Compressor(ABC):
-    """Frame compressor operating on feature-normalized (batch, field, cell) arrays."""
+    """Frame compressor operating on feature-normalized (batch, field, height, width) arrays."""
     @abstractmethod
     def fit(self, dataset, scaler, **kwargs):
         pass

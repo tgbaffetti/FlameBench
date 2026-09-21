@@ -1,39 +1,51 @@
+"""Centered randomized POD using the legacy PODReducer algorithm."""
 import numpy as np
-from sklearn.decomposition import IncrementalPCA
+from sklearn.utils.extmath import randomized_svd
 from ..Compressor import Compressor
 
 
 class POD(Compressor):
-    """Centered Euclidean POD approximated by incremental truncated SVD.
+    """Legacy randomized SVD, fitted on the full training matrix in memory.
 
-    Memory scales with (batch_size + rank) * fields * cells, not trajectory length.
-    This is not a volume-weighted POD and is not an exact batch SVD.
+    Image inputs are gathered into original cell order before decomposition.
+    Scaling remains external and shared with the other benchmark compressors.
     """
     name = "pod"
 
     def __init__(self, rank=16, batch_size=64):
-        if rank < 1 or batch_size < rank:
-            raise ValueError("Require batch_size >= rank >= 1")
+        if rank < 1 or batch_size < 1:
+            raise ValueError("Require rank >= 1 and batch_size >= 1")
         self.rank, self.batch_size = rank, batch_size
+
+    def vectors(self, frames):
+        if self.grid_indices is not None:
+            rows, columns = self.grid_indices
+            frames = frames[..., rows, columns]
+        return frames.reshape(len(frames), -1)
 
     def fit(self, dataset, scaler, **kwargs):
         self.shape = tuple(dataset.field_shape)
-        self.pca = IncrementalPCA(n_components=self.rank)
-        pending = None
-        # Keep one batch pending so the final short batch is included, never dropped.
-        for x in dataset.snapshot_batches(self.batch_size):
-            x = scaler.transform(x).reshape(len(x), -1)
-            pending = x if pending is None else np.concatenate((pending, x))
-            if len(pending) >= self.batch_size + self.rank:
-                self.pca.partial_fit(pending[:self.batch_size])
-                pending = pending[self.batch_size:]
-        if pending is None or len(pending) < self.rank:
-            raise ValueError("Too few training snapshots for POD rank")
-        self.pca.partial_fit(pending)
+        self.grid_indices = dataset.grid_indices
+        snapshots = np.concatenate([
+            self.vectors(scaler.transform(frames))
+            for frames in dataset.snapshot_batches(self.batch_size)
+        ])
+        X = snapshots.T
+        self.mean = X.mean(axis=1, keepdims=True)
+        X_c = X - self.mean
+        self.rank = min(self.rank, *X_c.shape)
+        self.U_r, self.singular_values, _ = randomized_svd(
+            X_c, n_components=self.rank, n_oversamples=20, n_iter=7, random_state=42)
         return self
 
     def encode(self, frames):
-        return self.pca.transform(frames.reshape(len(frames), -1)).astype(np.float32)
+        return ((self.vectors(frames) - self.mean.T) @ self.U_r).astype(np.float32)
 
     def decode(self, latent):
-        return self.pca.inverse_transform(latent).reshape(len(latent), *self.shape).astype(np.float32)
+        vectors = (latent @ self.U_r.T + self.mean.T).astype(np.float32)
+        if self.grid_indices is None:
+            return vectors.reshape(len(latent), *self.shape)
+        rows, columns = self.grid_indices
+        images = np.zeros((len(latent), *self.shape), dtype=np.float32)
+        images[..., rows, columns] = vectors.reshape(len(latent), self.shape[0], len(rows))
+        return images
