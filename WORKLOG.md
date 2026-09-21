@@ -175,6 +175,11 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
   `identity_transolver_pf4res.json` (pushforward-4 + residual + noise).
 - New metrics live (commit earlier): horizon-binned nRMSE + `restart_every` windowed protocol;
   CPU re-evaluation pass over 5 saved models running (free rollout + one-step each).
+- Transolver + pushforward (alone) finished but rolled out to garbage: nRMSE ~12.8, q' rel-L2
+  2200--3200, and again a finite-but-huge val score (233) slipped the gate. Transolver is
+  0-for-3 single-stabilizer recipes; the combined pf4+residual+noise run is its last shot.
+- GPU 1 re-evaluation pass launched: horizon curves + one-step protocol for the three
+  single-step operator runs (deeponet/transolver/mgn).
 
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
