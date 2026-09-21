@@ -197,6 +197,14 @@ New metrics on the single-step operator runs (sine_f10_A03, mean nRMSE):
   (Transolver) is the worst in free rollout (70x degradation); the worst one-step model
   (DeepONet) degrades most gracefully. All three hold through ~step 100, then split.
   This inversion + the horizon bins is the paper's central stability figure.
+- ROM baselines (same case): DMDc one-step 0.089, horizon flat [0.24|0.10|0.23|0.24] —
+  bounded-stable at every horizon. persistence/pod_lstm/pod_transformer one-step all ~0.090:
+  **the rank-16 POD compression floor dominates latent models' local error** (dynamics models
+  are locally indistinguishable; identity-space operators cut below the floor: 0.018-0.027).
+  Rank ablation is an obvious paper lever.
+- deeponet+pf4+res+noise: one-step 0.027, rollout [0.21|0.15|0.35|0.47] — best neural field
+  model on fields at every horizon, yet q' still garbage. The fields-vs-integral decoupling
+  is systematic, not an artifact of bad training.
 
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
