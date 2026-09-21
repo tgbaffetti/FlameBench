@@ -50,6 +50,16 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
   Files are gitignored — regenerate with `python -m DataProcessing.grid`.
 - Tests: 2 new in `tests/test_grid.py`; suite green (50 total).
 
+## 2026-09-21 — step 2: 0-D flame-response baseline
+- `DataProcessing/qprime.py` precomputes q(t) = Σ Q_c·V_c per case into `Data/Qseries/` (values
+  physically sensible: q̄ ≈ 1.15 W, f10 swings ≫ f40 — low-pass FTF; steps settle high).
+- `Baselines/ZeroD/` (MLP + GRU: window of phi' taps → q'/q0) and `Experiments/zerod.py` runner
+  (`fit`/`test`/`run`, same run-directory layout; writes the same `metrics.json` fields and
+  `<case>_Q.npz` files as `evaluation.py`, so it drops into the same results table).
+- Configs `zerod_mlp.json`, `zerod_gru.json` (window 256 taps = 128 ms). Tests: 4 new
+  (`tests/test_zerod.py`, incl. end-to-end learning of a synthetic linear flame response);
+  suite 54/54 green.
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.
