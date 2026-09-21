@@ -127,6 +127,9 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
   drift; q' (a volume integral) amplifies field bias. Motivates the stabilization axis exactly
   as the literature predicts (MP-PDE, Unrolled-Training). Follow-up launched:
   `identity_deeponet_pf4.json` (pushforward, unroll_steps=4).
+- Transolver full run: same pathology, stronger (mean nRMSE ~1.4, q' rel-L2 19–29).
+  `identity_transolver_pf4.json` launched. The single-step vs pushforward pair for both
+  operators is shaping into the paper's stabilization-ablation table.
 
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
