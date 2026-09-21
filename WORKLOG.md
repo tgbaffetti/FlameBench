@@ -113,6 +113,14 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
   0.50–0.89, phase err up to 31°. **First headline contrast:** the 0-D baseline beats the linear
   field ROM on q' by ~10× while DMDc's field nRMSE stays decent — fields ≠ the domain scalar.
 
+## 2026-09-21 — smoke phase complete
+- Persistence (post-fix): nRMSE 0.19–0.47, q' rel-L2 0.04–0.38. DMDc only modestly beats this
+  frozen floor on fields.
+- MGN 2-epoch GPU smoke (`smoke_mgn`): pipeline OK, rollouts finite, 15–21 ms/step.
+- All 6 method-set entries validated end to end (66 tests green). Full training runs launched:
+  DeepONet/Transolver/MGN, one per L40S; pod_lstm, pod_transformer, zerod_gru on CPU.
+  Remaining queue: CNN/grid track, ae/vae compressor runs, multi-seed, big-run analysis.
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.
