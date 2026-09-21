@@ -22,3 +22,6 @@ wandb/
 
 .idea/
 .ruff_cache/
+
+data4convolution/*
+delete_*
