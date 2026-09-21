@@ -14,15 +14,18 @@ from DataProcessing.latent import LatentDataset
 from Baselines.OrderReduction.Linear.POD import POD
 from Baselines.OrderReduction.DL.AE import AE
 from Baselines.OrderReduction.DL.VAE import VAE
+from Baselines.OrderReduction.Identity import Identity
 from Baselines.Forecast.Classical.ARX import ARX, Constant
 from Baselines.Forecast.DL.networks import GRU, LSTM, Transformer
+from Baselines.Forecast.DL.deeponet import DeepONet
 from .logging import ExperimentLogger
 from .paths import new_run_name, run_directory
 from .evaluation import evaluate
 from utils import seed_everything, write_json, provenance
 
-COMPRESSORS = {"pod": POD, "ae": AE, "vae": VAE}
-MODELS = {"arx": ARX, "persistence": Constant, "gru": GRU, "lstm": LSTM, "transformer": Transformer}
+COMPRESSORS = {"pod": POD, "ae": AE, "vae": VAE, "identity": Identity}
+MODELS = {"arx": ARX, "persistence": Constant, "gru": GRU, "lstm": LSTM, "transformer": Transformer,
+          "deeponet": DeepONet}
 
 
 def dump(path, value):

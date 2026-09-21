@@ -60,6 +60,26 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
   (`tests/test_zerod.py`, incl. end-to-end learning of a synthetic linear flame response);
   suite 54/54 green.
 
+- Smoke run on real data (`zerod_mlp`, CPU, ~40 epochs): q' rel-L2 0.0015–0.022 over the 6 test
+  cases; FTF gain err 0.002–0.012 (f10), 0.08–0.13 (f40); phase err ≤ 2.3° (f10), ≤ 17° (f40).
+  Strong 0-D bar — field models must beat this on q' to justify themselves.
+  Run: `Experiments/Results/zerod_mlp_20260921T091428Z`.
+
+## 2026-09-21 — smoke results: linear baselines
+- DMDc (`pod_arx_20260921T090804Z`): end-to-end OK. Mean nRMSE 0.16–0.36 over the 6 test cases
+  (T as low as 0.07), ~13 ms/step CPU, 4000-step steady-start rollouts stay bounded.
+  (q' columns off for this run — configs now have heat_release on for future runs.)
+
+## 2026-09-21 — step 3: DeepONet + field-model path
+- `Baselines/OrderReduction/Identity.py`: no-op compressor (flatten/unflatten) — field-level
+  models reuse the entire latent pipeline (run.py, validation_rollout, evaluate) unchanged.
+  Cost: the latent cache in the run dir is a scaled full-field copy (~7.5 GB per run).
+- `Baselines/Forecast/DL/deeponet.py`: DeepONet (branch = history at 2048 random sensor cells
+  + phi window; trunk = normalized planar (x, z) cell centers → p=64 basis; per-field
+  coefficients). Registered as model "deeponet" with compressor "identity";
+  config `identity_deeponet.json` (Nx=4, Ni=4, batch 8, cuda).
+- Tests: 4 new (`tests/test_deeponet.py`); suite 58/58 green. 2-epoch GPU smoke run launched.
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.
