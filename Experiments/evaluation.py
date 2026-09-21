@@ -23,7 +23,14 @@ def synchronize(model):
 
 
 def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
-             initialization="steady", gain_phase_start=0.5, save_predictions=False):
+             initialization="steady", gain_phase_start=0.5, save_predictions=False,
+             restart_every=None):
+    """restart_every=k re-encodes the observed state every k steps (k=1 is pure
+    one-step evaluation); None rolls out freely from the initial state. Restarted
+    protocols write metrics_restart<k>.json so free-rollout results are kept."""
+    if restart_every is not None and restart_every < 1:
+        raise ValueError("restart_every must be a positive integer or None")
+    suffix = f"_restart{restart_every}" if restart_every else ""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     metadata = dataset.metadata
@@ -57,9 +64,12 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
         q_ref, q_pred = [], []
         output = None
         if save_predictions:
-            output = np.lib.format.open_memmap(directory / f"{case['name']}_predictions.npy", mode="w+",
+            output = np.lib.format.open_memmap(directory / f"{case['name']}_predictions{suffix}.npy", mode="w+",
                        dtype="float32", shape=(hi-first, *dataset.field_shape))
         for k in range(first, hi):
+            if (restart_every and k > first and (k - first) % restart_every == 0
+                    and k - dataset.history >= lo):
+                history = compressor.encode(scaler.transform(np.array(x[k-dataset.history:k])))[None]
             forcing = forcing_window(phi, k, dataset.Ni)
             synchronize(model)
             begin = time.perf_counter()
@@ -82,11 +92,12 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
         result.update({"forecast_steps": hi-first, "first_predicted_index": first,
                        "inference_seconds": elapsed, "seconds_per_step": elapsed/(hi-first),
                        "timing_scope": "latent transition + field decoding + inverse scaling; excludes initial encoding, IO, metrics",
-                       "initialization": initialization, "Nx": dataset.Nx, "Ni": dataset.Ni})
+                       "initialization": initialization, "Nx": dataset.Nx, "Ni": dataset.Ni,
+                       "restart_every": restart_every})
         if volumes is not None:
             result["heat_release_relative_l2"] = relative_l2(q_pred, q_ref)
             times = np.arange(first, hi)*metadata["dt"]
-            np.savez(directory / f"{case['name']}_Q.npz", time=times, reference=q_ref, predicted=q_pred)
+            np.savez(directory / f"{case['name']}_Q{suffix}.npz", time=times, reference=q_ref, predicted=q_pred)
             if case["waveform"] == "sine":
                 q0 = float(np.dot(np.asarray(x[0, q_index], dtype=np.float64), volumes))
                 result["gain_phase"] = gain_phase(q_pred, q_ref, phi[first:hi], times,
@@ -94,5 +105,5 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
         else:
             result["heat_release_status"] = "explicitly_disabled"
         results[case["name"]] = result
-        write_json(directory / "metrics.json", results)
+        write_json(directory / f"metrics{suffix}.json", results)
     return results

@@ -439,3 +439,42 @@ def test_models_construct_with_registry_kwargs():
     from Baselines.Forecast.Classical.ARX import ARX, Constant
     for cls in (ARX, Constant):
         cls(rank=3, Nx=0, Ni=0, device="cpu")
+
+
+def test_horizon_binned_metrics():
+    metrics=FieldMetrics(['a'],bin_edges=(2,))
+    reference=np.array([[1.,2,3]])
+    for _ in range(2):
+        metrics.update(reference,reference)          # steps 1-2: exact
+    for _ in range(2):
+        metrics.update(reference+1,reference)        # steps 3+: unit error
+    result=metrics.result()
+    horizon=result['horizon_nrmse']
+    assert set(horizon)== {'1-2','3+'}
+    assert horizon['1-2']['mean_nrmse']==pytest.approx(0)
+    assert horizon['1-2']['steps']==2 and horizon['3+']['steps']==2
+    unit=1/np.std(reference[0])
+    assert horizon['3+']['mean_nrmse']==pytest.approx(unit)
+    assert result['mean_nrmse']==pytest.approx(unit/np.sqrt(2))
+    with pytest.raises(ValueError):
+        FieldMetrics(['a'],bin_edges=(5,2))
+
+
+def test_restart_every_windowed_rollout(metadata,tmp_path):
+    train=TrainingDataset(metadata,Nx=0,Ni=0)
+    scaler=FeatureScaler().fit(train.snapshot_batches())
+    pod=POD(rank=2,batch_size=8).fit(train,scaler)
+    class Frozen:
+        def predict(self,history,forcing):
+            return history[:,-1]
+    test_data=TestDataset(metadata,Nx=0,Ni=0)
+    free=evaluate(Frozen(),test_data,pod,scaler,tmp_path/'eval',heat_release=False)
+    onestep=evaluate(Frozen(),test_data,pod,scaler,tmp_path/'eval',heat_release=False,
+                     restart_every=1)
+    assert (tmp_path/'eval'/'metrics.json').exists()
+    assert (tmp_path/'eval'/'metrics_restart1.json').exists()
+    assert onestep['sine']['restart_every']==1
+    # Restarting from truth every step must beat holding the initial state forever.
+    assert onestep['sine']['mean_nrmse']<free['sine']['mean_nrmse']
+    with pytest.raises(ValueError,match='restart_every'):
+        evaluate(Frozen(),test_data,pod,scaler,tmp_path/'eval',heat_release=False,restart_every=0)

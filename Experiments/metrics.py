@@ -1,14 +1,35 @@
 """Physical-unit metrics; evaluation statistics never feed training."""
+from bisect import bisect_left
 import numpy as np
 
 
 class FieldMetrics:
-    def __init__(self, fields):
+    """Streaming nRMSE per field, pooled and per rollout-horizon bin.
+
+    update() is called once per rollout step, in order; bin_edges (in steps,
+    1-based, inclusive) split the horizon, e.g. (10, 100, 1000) gives bins
+    1-10, 11-100, 101-1000, 1001+. Normalization uses the pooled reference
+    std so bins are comparable with each other and with the pooled value.
+    """
+
+    def __init__(self, fields, bin_edges=(10, 100, 1000)):
+        if list(bin_edges) != sorted(set(bin_edges)) or (bin_edges and bin_edges[0] < 1):
+            raise ValueError("bin_edges must be strictly increasing and >= 1")
         self.fields = list(fields)
+        self.bin_edges = tuple(bin_edges)
+        lows = (1,) + tuple(e + 1 for e in self.bin_edges)
+        highs = self.bin_edges + (None,)
+        self.bin_labels = [f"{lo}-{hi}" if hi else f"{lo}+" for lo, hi in zip(lows, highs)]
+        self.step = 0
         self.count = 0
         self.mean = np.zeros(len(fields), dtype=np.float64)
         self.m2 = np.zeros(len(fields), dtype=np.float64)
-        self.sse = np.zeros(len(fields), dtype=np.float64)
+        self.bin_sse = np.zeros((len(self.bin_labels), len(fields)), dtype=np.float64)
+        self.bin_count = np.zeros(len(self.bin_labels), dtype=np.int64)
+
+    @property
+    def sse(self):
+        return self.bin_sse.sum(axis=0)
 
     def update(self, predicted, reference):
         predicted, reference = np.asarray(predicted, dtype=np.float64), np.asarray(reference, dtype=np.float64)
@@ -22,16 +43,31 @@ class FieldMetrics:
         self.m2 += np.square(reference-mu[:, None]).sum(axis=1) + delta**2*self.count*n/(self.count+n)
         self.mean += delta*n/(self.count+n)
         self.count += n
-        self.sse += np.square(predicted-reference).sum(axis=1)
+        self.step += 1
+        b = bisect_left(self.bin_edges, self.step)
+        self.bin_sse[b] += np.square(predicted-reference).sum(axis=1)
+        self.bin_count[b] += n
+
+    @staticmethod
+    def _nrmse(rmse, std):
+        # Constant reference fields have undefined std-normalized error, not zero error.
+        return [float(a/b) if b > 0 else None for a, b in zip(rmse, std)]
 
     def result(self):
         std = np.sqrt(self.m2/self.count)
-        rmse = np.sqrt(self.sse/self.count)
-        # Constant reference fields have undefined std-normalized error, not zero error.
-        nrmse = [float(a/b) if b > 0 else None for a, b in zip(rmse, std)]
+        nrmse = self._nrmse(np.sqrt(self.sse/self.count), std)
+        horizon = {}
+        for label, sse, count in zip(self.bin_labels, self.bin_sse, self.bin_count):
+            if count == 0:
+                continue
+            binned = self._nrmse(np.sqrt(sse/count), std)
+            horizon[label] = {"field_nrmse": dict(zip(self.fields, binned)),
+                              "mean_nrmse": float(np.mean(binned)) if all(x is not None for x in binned) else None,
+                              "steps": int(count/(self.count/self.step))}
         return {"field_nrmse": dict(zip(self.fields, nrmse)),
-                "field_rmse": dict(zip(self.fields, map(float, rmse))),
+                "field_rmse": dict(zip(self.fields, map(float, np.sqrt(self.sse/self.count)))),
                 "mean_nrmse": float(np.mean(nrmse)) if all(x is not None for x in nrmse) else None,
+                "horizon_nrmse": horizon,
                 "undefined_fields": [f for f, value in zip(self.fields, nrmse) if value is None]}
 
 
