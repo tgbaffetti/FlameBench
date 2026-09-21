@@ -131,6 +131,15 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
   `identity_transolver_pf4.json` launched. The single-step vs pushforward pair for both
   operators is shaping into the paper's stabilization-ablation table.
 
+## 2026-09-21 — stabilization axis extended: residual + noise injection
+- DeepONet+pushforward(4) still diverged in the validation rollout (the divergence gate in
+  run.py correctly refused to save it). Added the remaining standard stabilizers to `DLModel`,
+  both config-driven: `residual` (network learns the state delta) and `noise_std`
+  (training-time input-noise injection, the MeshGraphNets recipe). `step()` centralizes the
+  transition so predict/rollout/eval all honor residual mode. 1 new test (5 in test_unroll).
+- Launched `identity_deeponet_pf4res.json` (pushforward-4 + residual + noise 0.01) on GPU 0.
+- pod_lstm and pod_transformer full runs finished on CPU; zerod_gru training.
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.

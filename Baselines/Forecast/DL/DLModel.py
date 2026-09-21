@@ -12,22 +12,34 @@ class DLModel(Model):
                    "hidden": {"value": 64, "type": "categorical", "choices": [32, 64, 128]}}
 
     def __init__(self, network, device="cpu", lr=1e-3, epochs=100, patience=20,
-                 unroll_grad="none", **kwargs):
+                 unroll_grad="none", residual=False, noise_std=0.0, **kwargs):
         if unroll_grad not in {"none", "full"}:
             raise ValueError("unroll_grad must be 'none' (pushforward) or 'full'")
+        if noise_std < 0:
+            raise ValueError("noise_std must be nonnegative")
         self.device = torch.device(device)
         self.network = network.to(self.device)
         self.lr, self.epochs, self.patience = lr, epochs, patience
         self.unroll_grad = unroll_grad
+        self.residual = residual
+        self.noise_std = noise_std
 
-    def compute_loss(self, history, forcing, target):
+    def step(self, history, forcing):
+        """One transition; with residual=True the network learns the state delta."""
+        out = self.network(history, forcing)
+        return history[:, -1] + out if self.residual else out
+
+    def compute_loss(self, history, forcing, target, train=False):
         """Single-step MSE, or the mean over an unrolled rollout when the batch
-        carries (batch, horizon, ...) forcing/targets (pushforward detaches)."""
+        carries (batch, horizon, ...) forcing/targets (pushforward detaches).
+        Training-time noise injection (MeshGraphNets) perturbs the input states."""
+        if train and self.noise_std > 0:
+            history = history + self.noise_std * torch.randn_like(history)
         if target.dim() == 2:
-            return nn.functional.mse_loss(self.network(history, forcing), target)
+            return nn.functional.mse_loss(self.step(history, forcing), target)
         loss = 0
         for k in range(target.shape[1]):
-            predicted = self.network(history, forcing[:, k])
+            predicted = self.step(history, forcing[:, k])
             loss = loss + nn.functional.mse_loss(predicted, target[:, k])
             step = predicted.detach() if self.unroll_grad == "none" else predicted
             history = torch.cat((history[:, 1:], step[:, None]), dim=1)
@@ -57,7 +69,7 @@ class DLModel(Model):
             for history, forcing, target in training:
                 history, forcing, target = [x.to(self.device) for x in (history, forcing, target)]
                 optimizer.zero_grad(set_to_none=True)
-                loss = self.compute_loss(history, forcing, target)
+                loss = self.compute_loss(history, forcing, target, train=True)
                 if not torch.isfinite(loss):
                     raise FloatingPointError("Nonfinite training loss")
                 loss.backward()
@@ -105,4 +117,4 @@ class DLModel(Model):
         with torch.no_grad():
             x = torch.as_tensor(history, dtype=torch.float32, device=self.device)
             u = torch.as_tensor(forcing, dtype=torch.float32, device=self.device)
-            return self.network(x, u).cpu().numpy()
+            return self.step(x, u).cpu().numpy()

@@ -72,3 +72,23 @@ def test_compute_loss_unrolled(unroll_grad):
 def test_compute_loss_rejects_bad_mode():
     with pytest.raises(ValueError, match="unroll_grad"):
         GRU(rank=RANK, Nx=2, Ni=1, hidden=8, layers=1, device="cpu", unroll_grad="typo")
+
+
+def test_residual_and_noise():
+    torch.manual_seed(0)
+    model = GRU(rank=RANK, Nx=2, Ni=1, hidden=8, layers=1, device="cpu",
+                residual=True, noise_std=0.1)
+    history = torch.randn(5, 3, RANK)
+    forcing = torch.rand(5, 3)
+    # residual: prediction = last state + network delta
+    delta = model.network(history, forcing)
+    assert torch.allclose(model.step(history, forcing), history[:, -1] + delta)
+    predicted = model.predict(history.numpy(), forcing.numpy())
+    assert np.allclose(predicted, (history[:, -1] + delta).detach().numpy(), atol=1e-6)
+    # noise only at training time: eval losses are deterministic, train losses are not
+    target = torch.randn(5, RANK)
+    eval_losses = {model.compute_loss(history, forcing, target).item() for _ in range(3)}
+    train_losses = {model.compute_loss(history, forcing, target, train=True).item() for _ in range(3)}
+    assert len(eval_losses) == 1 and len(train_losses) == 3
+    with pytest.raises(ValueError, match="noise_std"):
+        GRU(rank=RANK, Nx=2, Ni=1, hidden=8, layers=1, device="cpu", noise_std=-1)
