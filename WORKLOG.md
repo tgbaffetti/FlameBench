@@ -145,7 +145,7 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
 |---|---|---|
 | DMDc | **0.16–0.36** | 0.03–0.21 |
 | persistence | 0.19–0.47 | 0.04–0.38 |
-| pod_transformer | 0.33–0.51 | (re-eval running) |
+| pod_transformer | 0.33–0.51 | 0.07–0.38, FTF gain err ~0.95 |
 | pod_lstm | 0.39–0.81 | 0.15–0.43, FTF gain err ~0.9 |
 | deeponet +pf4+residual+noise | 0.34–0.55 | 59–89 (!) |
 | deeponet single-step | 0.55–1.11 | 19–204 |
