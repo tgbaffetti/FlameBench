@@ -107,6 +107,12 @@ Principle: one representative per family, mesh-native, natural phi(t) injection.
   `"unroll_grad"` under `model` in any neural config; classical models are guarded.
 - 4 new tests (`tests/test_unroll.py`), no regressions elsewhere.
 
+## 2026-09-21 — smoke results: Transolver + DMDc heat-release columns
+- Transolver 2-epoch GPU smoke (`smoke_transolver`): pipeline OK, rollouts finite, 5–7 ms/step.
+- DMDc re-evaluated with heat_release on (same trained run): q' rel-L2 0.03–0.21, FTF gain err
+  0.50–0.89, phase err up to 31°. **First headline contrast:** the 0-D baseline beats the linear
+  field ROM on q' by ~10× while DMDc's field nRMSE stays decent — fields ≠ the domain scalar.
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.
