@@ -1,68 +1,170 @@
+"""Neural forecasters with configurable layers.
+
+Every network reads the rows [x(s), phi(s+1) - 1] of a ForecasterDataset window, shape
+(batch, length, input_size), and returns the increment of the state, shape (batch, output_size):
+x(t+1) = x(t) + increment. input_size is the state size plus one (the forcing column) and
+output_size is the state size. The layers form one nn.Sequential, so printing a forecaster's
+network shows each layer in order.
+
+GRU, LSTM and CNN take a list with one width per layer (hiddens or channels). Each layer is
+followed by normalization (None, "layer" or "batch"), activation (None, "relu", "gelu", "silu"
+or "tanh") and dropout. The optimizer and weight_decay are DLModel keywords.
+"""
 import torch
 from torch import nn
 from .DLModel import DLModel
 
+ACTIVATIONS = {None: nn.Identity, "relu": nn.ReLU, "gelu": nn.GELU, "silu": nn.SiLU, "tanh": nn.Tanh}
 
-class RecurrentNetwork(nn.Module):
-    """GRU/LSTM over the rows [x(s), phi(s+1) - 1]; an MLP head maps the last state to the increment.
 
-    hidden: state size; layers: stacked recurrent layers; dropout: between recurrent layers
-    (ignored by torch when layers == 1).
-    """
-    def __init__(self, rank, hidden=64, layers=2, dropout=0.0, kind="gru"):
+class Increment(nn.Module):
+    def __init__(self, *layers):
         super().__init__()
-        cls = nn.GRU if kind == "gru" else nn.LSTM
-        self.core = cls(rank + 1, hidden, num_layers=layers, dropout=dropout if layers > 1 else 0.0,
-                        batch_first=True)
-        self.head = nn.Sequential(nn.Linear(hidden, hidden), nn.SiLU(), nn.Linear(hidden, rank))
+        self.layers = nn.Sequential(*layers)
 
     def forward(self, states, forcing):
-        outputs, _ = self.core(torch.cat((states, forcing[..., None]), dim=-1))
-        return states[:, -1] + self.head(outputs[:, -1])
+        return states[:, -1] + self.layers(torch.cat((states, forcing[..., None]), dim=-1))
 
 
-class TransformerNetwork(nn.Module):
-    """Transformer encoder over the rows [x(s), phi(s+1) - 1]; the last token predicts the increment.
-
-    length: number of rows, max(Nx, Ni) + 1; hidden: token size; layers: encoder layers; heads:
-    attention heads (must divide hidden); feedforward: MLP size inside each layer (default
-    4 * hidden); dropout: inside each layer.
-    """
-    def __init__(self, rank, length, hidden=64, layers=2, heads=4, feedforward=None, dropout=0.0):
+class Normalization(nn.Module):
+    """None, "layer" or "batch" normalization of the features of (batch, length, features)."""
+    def __init__(self, kind, size):
         super().__init__()
-        if hidden % heads:
-            raise ValueError("hidden must be divisible by heads")
-        self.embed = nn.Linear(rank + 1, hidden)
-        self.position = nn.Parameter(torch.zeros(1, length, hidden))
-        nn.init.normal_(self.position, std=0.02)
-        layer = nn.TransformerEncoderLayer(hidden, heads, feedforward or 4 * hidden, dropout=dropout,
-                                           batch_first=True, activation="gelu")
-        self.core = nn.TransformerEncoder(layer, layers, enable_nested_tensor=False)
-        self.head = nn.Linear(hidden, rank)
+        if kind not in {None, "layer", "batch"}:
+            raise ValueError(f"Unknown normalization: {kind}")
+        self.kind = kind
+        if kind == "layer":
+            self.norm = nn.LayerNorm(size)
+        elif kind == "batch":
+            self.norm = nn.BatchNorm1d(size)
+        else:
+            self.norm = nn.Identity()
 
-    def forward(self, states, forcing):
-        tokens = self.embed(torch.cat((states, forcing[..., None]), dim=-1)) + self.position
-        return states[:, -1] + self.head(self.core(tokens)[:, -1])
+    def forward(self, x):
+        if self.kind == "batch":  # BatchNorm1d expects (batch, features, length).
+            return self.norm(x.transpose(1, 2)).transpose(1, 2)
+        return self.norm(x)
+
+
+class Recurrent(nn.Module):
+    """One nn.GRU or nn.LSTM layer that returns its outputs only, (batch, length, directions * size)."""
+    def __init__(self, layer_class, input_size, size, bidirectional):
+        super().__init__()
+        self.layer = layer_class(input_size, size, batch_first=True, bidirectional=bidirectional)
+
+    def forward(self, x):
+        return self.layer(x)[0]
+
+
+class Convolution(nn.Module):
+    """nn.Conv1d over the rows of (batch, length, channels), with valid padding."""
+    def __init__(self, input_size, size, kernel_size):
+        super().__init__()
+        self.layer = nn.Conv1d(input_size, size, kernel_size)
+
+    def forward(self, x):
+        return self.layer(x.transpose(1, 2)).transpose(1, 2)
+
+
+class Position(nn.Module):
+    """Learned position embedding added to the tokens, so attention knows the row order."""
+    def __init__(self, length, size):
+        super().__init__()
+        self.embedding = nn.Parameter(torch.randn(1, length, size) * 0.02)
+
+    def forward(self, tokens):
+        return tokens + self.embedding
+
+
+class LastRow(nn.Module):
+    """Features of the last row. With backward_from (bidirectional layers), the features from that
+    index on come from the backward direction and are read at the first row instead, where it has
+    seen the whole window; both parts are concatenated into one vector."""
+    def __init__(self, backward_from=None):
+        super().__init__()
+        self.backward_from = backward_from
+
+    def forward(self, x):
+        if self.backward_from is None:
+            return x[:, -1]
+        return torch.cat((x[:, -1, :self.backward_from], x[:, 0, self.backward_from:]), dim=-1)
+
+
+def block(layer, size, normalization, activation, dropout):
+    return [layer, Normalization(normalization, size), ACTIVATIONS[activation](), nn.Dropout(dropout)]
 
 
 class GRU(DLModel):
-    """training: DLModel keywords (device, lr, epochs, patience, rollout_weight, loss, joint_*)."""
+    """hiddens: hidden size of each recurrent layer; bidirectional: each layer also reads the
+    window backward. A linear layer maps the last row to the increment.
+    training: DLModel keywords (device, lr, optimizer, weight_decay, epochs, ...)."""
     name = "gru"
-    def __init__(self, rank, Nx=9, Ni=0, hidden=64, layers=2, dropout=0.0, **training):
-        super().__init__(RecurrentNetwork(rank, hidden, layers, dropout, "gru"), Nx, Ni, **training)
+    layer_class = nn.GRU
+    hyperparameters_ranges = {**DLModel.hyperparameters_ranges,
+                              "hiddens": {"type": "categorical", "choices": [[64], [64, 64], [128, 64], [64, 64, 32]]},
+                              "bidirectional": {"type": "categorical", "choices": [False, True]},
+                              "normalization": {"type": "categorical", "choices": [None, "layer"]}}
+
+    def __init__(self, input_size, output_size, Nx=9, Ni=0, hiddens=(64, 64), bidirectional=False,
+                 normalization=None, activation=None, dropout=0.0, **training):
+        directions = 2 if bidirectional else 1
+        layers, size = [], input_size
+        for hidden in hiddens:
+            recurrent = Recurrent(self.layer_class, size, hidden, bidirectional)
+            size = directions * hidden
+            layers += block(recurrent, size, normalization, activation, dropout)
+        last = LastRow(hiddens[-1] if bidirectional else None)
+        super().__init__(Increment(*layers, last, nn.Linear(size, output_size)), Nx, Ni, **training)
 
 
-class LSTM(DLModel):
+class LSTM(GRU):
     name = "lstm"
-    def __init__(self, rank, Nx=9, Ni=0, hidden=64, layers=2, dropout=0.0, **training):
-        super().__init__(RecurrentNetwork(rank, hidden, layers, dropout, "lstm"), Nx, Ni, **training)
+    layer_class = nn.LSTM
+
+
+class CNN(DLModel):
+    """channels: output channels of each 1D convolution over the rows. Valid padding: each
+    convolution removes kernel_size - 1 rows. The remaining rows are flattened and a linear layer
+    maps them to the increment."""
+    name = "cnn"
+    hyperparameters_ranges = {**DLModel.hyperparameters_ranges,
+                              "channels": {"type": "categorical", "choices": [[32], [32, 32], [64, 32], [32, 32, 32]]},
+                              "kernel_size": {"type": "categorical", "choices": [3, 5]},
+                              "activation": {"type": "categorical", "choices": ["relu", "gelu", "silu"]},
+                              "normalization": {"type": "categorical", "choices": [None, "layer", "batch"]}}
+    # The window must outlast the convolutions: 3 layers of kernel 5 remove 12 rows.
+    dataset_ranges = {"Nx": {"type": "int", "low": 12, "high": 20}}
+
+    def __init__(self, input_size, output_size, Nx=9, Ni=0, channels=(32, 32), kernel_size=3, normalization=None,
+                 activation="relu", dropout=0.0, **training):
+        rows = max(Nx, Ni) + 1 - len(channels) * (kernel_size - 1)
+        if rows < 1:
+            raise ValueError(f"A window of {max(Nx, Ni) + 1} rows is too short for {len(channels)} "
+                             f"convolutions of kernel_size {kernel_size}; increase Nx or Ni")
+        layers, size = [], input_size
+        for width in channels:
+            layers += block(Convolution(size, width, kernel_size), width, normalization, activation, dropout)
+            size = width
+        super().__init__(Increment(*layers, nn.Flatten(), nn.Linear(rows * size, output_size)), Nx, Ni, **training)
 
 
 class Transformer(DLModel):
+    """A linear layer embeds each row into a token of size hidden, a learned position embedding
+    gives the row order, then torch's nn.TransformerEncoder; a linear layer maps the last token to
+    the increment. hidden, heads, layers, feedforward (default 4 * hidden), dropout and activation
+    ("relu" or "gelu") are those of nn.TransformerEncoderLayer."""
     name = "transformer"
     hyperparameters_ranges = {**DLModel.hyperparameters_ranges,
-                              "heads": {"type": "categorical", "choices": [2, 4, 8]}}
+                              "hidden": {"type": "categorical", "choices": [32, 64, 128]},
+                              "layers": {"type": "int", "low": 1, "high": 4},
+                              "heads": {"type": "categorical", "choices": [2, 4, 8]},
+                              "activation": {"type": "categorical", "choices": ["relu", "gelu"]}}
 
-    def __init__(self, rank, Nx=9, Ni=0, hidden=64, layers=2, heads=4, feedforward=None, dropout=0.0, **training):
-        network = TransformerNetwork(rank, max(Nx, Ni) + 1, hidden, layers, heads, feedforward, dropout)
+    def __init__(self, input_size, output_size, Nx=9, Ni=0, hidden=64, layers=2, heads=4, feedforward=None,
+                 activation="gelu", dropout=0.0, **training):
+        layer = nn.TransformerEncoderLayer(hidden, heads, feedforward or 4 * hidden, dropout, activation,
+                                           batch_first=True)
+        network = Increment(nn.Linear(input_size, hidden), Position(max(Nx, Ni) + 1, hidden),
+                            nn.TransformerEncoder(layer, layers, enable_nested_tensor=False), LastRow(),
+                            nn.Linear(hidden, output_size))
         super().__init__(network, Nx, Ni, **training)

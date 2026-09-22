@@ -37,7 +37,7 @@
     }
   },
   "evaluation": {
-    "heat_release": false,
+    "heat_release": true,
     "initialization": "steady",
     "gain_phase_start": 0.5,
     "save_predictions": false

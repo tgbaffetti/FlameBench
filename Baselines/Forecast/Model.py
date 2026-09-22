@@ -16,7 +16,7 @@ class Model(ABC):
 
     @classmethod
     def build(cls, hyperparameters, **context):
-        """Create a forecaster; context holds the values that are never tuned here (rank, Nx, Ni, device)."""
+        """Create a forecaster; context holds the values that are never tuned here (input_size, output_size, Nx, Ni, device)."""
         return cls(**context, **hyperparameters)
 
     @abstractmethod

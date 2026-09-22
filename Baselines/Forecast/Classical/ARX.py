@@ -13,8 +13,8 @@ class ARX(Model):
     hyperparameters_ranges = {"alpha": {"type": "float", "low": 1e-8, "high": 1.0, "log": True}}
     dataset_ranges = {"horizon": 1}  # The closed-form fit is one-step.
 
-    def __init__(self, rank=None, Nx=9, Ni=0, device="cpu", alpha=1e-4):
-        # rank and device are part of the shared constructor; ARX infers the rank from data.
+    def __init__(self, input_size=None, output_size=None, Nx=9, Ni=0, device="cpu", alpha=1e-4):
+        # The sizes and device are part of the shared constructor; ARX infers the sizes from data.
         if alpha < 0:
             raise ValueError("alpha must be nonnegative")
         self.Nx, self.Ni, self.alpha = Nx, Ni, alpha
@@ -52,7 +52,7 @@ class Constant(Model):
     name = "constant"
     dataset_ranges = {"horizon": 1}
 
-    def __init__(self, rank=None, Nx=9, Ni=0, device="cpu"):
+    def __init__(self, input_size=None, output_size=None, Nx=9, Ni=0, device="cpu"):
         self.Nx, self.Ni = Nx, Ni
 
     def fit(self, training, validation=None, **kwargs):

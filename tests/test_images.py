@@ -44,7 +44,7 @@ def test_reject_duplicate_pixels():
 
 @pytest.mark.parametrize('kind', ['pod', 'cae', 'cvae', 'vit_ae'])
 def test_image_pipeline_metrics(tmp_path, kind):
-    grid = ImageGrid(np.array([[1, 0, 0], [0, 0, 1], [0, 0, 0]]))
+    grid = ImageGrid(np.array([[1, 0, 0], [0, 0, 1], [0, 0, 0]]), volumes=[1, 2, 3])
     indices = tmp_path / 'indices.npz'
     grid.save(indices)
     cells = np.broadcast_to(np.array([[1, 2, 3], [3, 5, 7]], dtype=np.float32), (12, 2, 3)).copy()
@@ -55,10 +55,8 @@ def test_image_pipeline_metrics(tmp_path, kind):
         np.save(data, grid.images(frames))
         np.save(phi, np.ones(12, dtype=np.float32))
         cases.append(dict(name=split, split=split, data=str(data), phi=str(phi), waveform='step'))
-    volumes = tmp_path / 'volumes.npy'
-    np.save(volumes, [1, 2, 3])
     metadata = dict(fields=['T', 'mix:Q'], cases=cases, dt=0.0005,
-                    grid_indices=str(indices), cell_volumes=str(volumes), initial_snapshot_is_steady=True)
+                    grid_indices=str(indices), initial_snapshot_is_steady=True)
     raw = CompressorDataset(metadata, 'train', validation_fraction=0.5, blocks=2)
     scaler = FeatureScaler(raw.mask).fit(DataLoader(raw, batch_size=3))
     split = dict(validation_fraction=0.5, blocks=2, scaler=scaler)
@@ -135,7 +133,7 @@ def test_joint_training_updates_compressor(tmp_path):
               'validation_fraction': 0.5, 'blocks': 2, 'K_eval': 3, 'batch_size': 4, 'joint_batch_size': 2,
               'compressor': {'name': 'cae', 'rank': 2, 'channels': [2, 4], 'epochs': 1, 'batch_size': 4},
               'dataset': {'Nx': 1, 'Ni': 0, 'horizon': 3},
-              'forecaster': {'name': 'gru', 'hidden': 4, 'layers': 1, 'epochs': 1, 'joint_epochs': 2, 'patience': 5},
+              'forecaster': {'name': 'gru', 'hiddens': [4], 'epochs': 1, 'joint_epochs': 2, 'patience': 5},
               'logging': {'wandb': {'mode': 'disabled'}}, 'evaluation': {'heat_release': False}}
     assert np.isfinite(fit(config))
     directory = tmp_path / 'runs' / 'cae_gru' / 'seed_42'
@@ -155,7 +153,7 @@ def hpo_config(tmp_path):
             'batch_size': 4, 'joint_batch_size': 2, 'trials': 2,
             'compressor': {'rank': 2, 'epochs': 1, 'levels': 1, 'base_channels': 2, 'kernel_size': 3},
             'dataset': {'Nx': 1, 'Ni': 0, 'horizon': 3},
-            'forecaster': {'hidden': 4, 'layers': 1, 'epochs': 1, 'patience': 5}}
+            'forecaster': {'hiddens': [4], 'epochs': 1, 'patience': 5}}
 
 
 def test_hpo_three_stages(tmp_path):
@@ -230,16 +228,41 @@ def test_vit_shapes(shape):
     assert compressor.decoder(torch.zeros(2, 3)).shape == (2, *shape)
 
 
-@pytest.mark.parametrize('kind', ['gru', 'lstm', 'transformer'])
+@pytest.mark.parametrize('kind', ['gru', 'lstm', 'cnn', 'transformer'])
 def test_forecaster_architecture_options(kind):
-    from Baselines.Forecast.DL.networks import GRU, LSTM, Transformer
-    cls = {'gru': GRU, 'lstm': LSTM, 'transformer': Transformer}[kind]
-    extra = {'heads': 2, 'feedforward': 24} if kind == 'transformer' else {}
-    model = cls(rank=3, Nx=2, Ni=1, hidden=8, layers=3, dropout=0.1, **extra)
+    from torch import nn
+    from Baselines.Forecast.DL.networks import Recurrent, Transformer, CNN
+    from Experiments.run import FORECASTERS
+    options = {'gru': dict(hiddens=[8, 6], bidirectional=True, normalization='layer', activation='tanh'),
+               'lstm': dict(hiddens=[8, 6, 4], normalization='batch'),
+               'cnn': dict(channels=[8, 6], kernel_size=2, normalization='batch', activation='gelu'),
+               'transformer': dict(hidden=8, layers=3, heads=2, feedforward=24, activation='relu')}[kind]
+    model = FORECASTERS[kind](input_size=4, output_size=3, Nx=2, Ni=1, dropout=0.1, **options)
     assert model.predict(np.zeros((2, 3, 3)), np.ones((2, 3))).shape == (2, 3)
+    layers, head = model.network.layers, model.network.layers[-1]
+    assert 'Linear' in str(model.network)  # Printing lists every layer.
+    assert all(module.p == 0.1 for module in layers if isinstance(module, nn.Dropout))
+    if kind == 'gru':
+        assert layers[0].layer.bidirectional and isinstance(layers[1].norm, nn.LayerNorm)
+        assert isinstance(layers[2], nn.Tanh) and head.in_features == 2 * 6
+    if kind == 'lstm':
+        assert [m.layer.hidden_size for m in layers if isinstance(m, Recurrent)] == [8, 6, 4]
+        assert isinstance(layers[0].layer, nn.LSTM) and isinstance(layers[1].norm, nn.BatchNorm1d)
+    if kind == 'cnn':
+        assert head.in_features == (3 - 2) * 6  # Valid padding: two kernels of 2 remove two rows.
+        with pytest.raises(ValueError, match='too short'):
+            CNN(input_size=4, output_size=3, Nx=2, channels=[8, 8], kernel_size=3)
     if kind == 'transformer':
-        assert model.network.core.layers[0].linear1.out_features == 24
-        with pytest.raises(ValueError, match='divisible'):
-            Transformer(rank=3, hidden=10, heads=4)
-    else:
-        assert model.network.core.num_layers == 3 and model.network.core.dropout == 0.1
+        encoder = layers[2]
+        assert encoder.num_layers == 3 and encoder.layers[0].linear1.out_features == 24
+        with pytest.raises(AssertionError, match='divisible'):
+            Transformer(input_size=4, output_size=3, hidden=10, heads=4)
+
+
+def test_forecaster_optimizer():
+    from Baselines.Forecast.DL.networks import GRU
+    model = GRU(input_size=3, output_size=2, optimizer='sgd', weight_decay=0.1)
+    optimizer = model.make_optimizer(model.network.parameters(), 0.01)
+    assert isinstance(optimizer, torch.optim.SGD) and optimizer.defaults['weight_decay'] == 0.1
+    with pytest.raises(ValueError, match='optimizer'):
+        GRU(input_size=3, output_size=2, optimizer='rmsprop')

@@ -5,7 +5,8 @@ then unfreezes a torch compressor and trains encoder, forecaster and decoder tog
 `joint_epochs` with learning rate `joint_lr`. Both phases use loss = (1 - rollout_weight) * step-1
 error + rollout_weight * mean error over the K recursive (fed-back) predictions of each window,
 as in TransformerROM's TransformerLoss; K is the horizon of the dataset windows. The error
-function is MSE, MAE, Huber or SmoothL1. Validation windows may have a longer horizon (K_eval);
+function is MSE, MAE, Huber or SmoothL1. The optimizer (adam, adamw or sgd) and its
+weight_decay are the same in both phases. Validation windows may have a longer horizon (K_eval);
 validation also logs the error of each step.
 """
 import random
@@ -21,29 +22,34 @@ from ..Model import Model
 class DLModel(Model):
     """Keys starting with joint_ are tuned in the joint stage of the HPO, the others before it."""
     hyperparameters_ranges = {"lr": {"type": "float", "low": 1e-5, "high": 3e-3, "log": True},
-                              "hidden": {"type": "categorical", "choices": [32, 64, 128]},
-                              "layers": {"type": "int", "low": 1, "high": 4},
+                              "optimizer": {"type": "categorical", "choices": ["adam", "adamw"]},
+                              "weight_decay": {"type": "float", "low": 1e-6, "high": 1e-2, "log": True},
                               "dropout": {"type": "float", "low": 0.0, "high": 0.3},
                               "rollout_weight": {"type": "float", "low": 0.0, "high": 1.0},
                               "joint_lr": {"type": "float", "low": 1e-6, "high": 1e-3, "log": True},
                               "joint_epochs": {"type": "categorical", "choices": [5, 10, 20]}}
 
-    def __init__(self, network, Nx=9, Ni=0, device="cpu", lr=1e-3, epochs=100, patience=20,
-                 rollout_weight=0.5, loss="mse", detach_rollout=False, joint_lr=1e-4, joint_epochs=0):
+    OPTIMIZERS = {"adam": torch.optim.Adam, "adamw": torch.optim.AdamW, "sgd": torch.optim.SGD}
+
+    def __init__(self, network, Nx=9, Ni=0, device="cpu", lr=1e-3, optimizer="adamw", weight_decay=0.0, epochs=100,
+                 patience=20, rollout_weight=0.5, loss="mse", detach_rollout=False, joint_lr=1e-4, joint_epochs=0):
+        if optimizer not in self.OPTIMIZERS:
+            raise ValueError(f"Unknown optimizer: {optimizer}")
         if epochs < 1 or joint_epochs < 0 or not 0 <= rollout_weight <= 1:
             raise ValueError("Require epochs >= 1, joint_epochs >= 0 and 0 <= rollout_weight <= 1")
         error_function(loss)
         self.device = torch.device(device)
         self.network = network.to(self.device)
         self.Nx, self.Ni = Nx, Ni
-        self.lr, self.epochs, self.patience = lr, epochs, patience
+        self.lr, self.optimizer, self.weight_decay = lr, optimizer, weight_decay
+        self.epochs, self.patience = epochs, patience
         self.joint_lr, self.joint_epochs = joint_lr, joint_epochs
         self.rollout_weight, self.loss, self.detach_rollout = rollout_weight, loss, detach_rollout
 
     def fit(self, training, validation=None, logger=None, directory=None, resume=False, **kwargs):
         if validation is None:
             raise ValueError("Neural training requires held-out validation")
-        optimizer = torch.optim.AdamW(self.network.parameters(), lr=self.lr)
+        optimizer = self.make_optimizer(self.network.parameters(), self.lr)
         start, best, stale, best_state = 0, float("inf"), 0, None
         checkpoint = Path(directory) / "last.pt" if directory else None
         if resume:
@@ -119,7 +125,7 @@ class DLModel(Model):
         """
         modules = (compressor.encoder, self.network, compressor.decoder)
         parameters = [p for module in modules for p in module.parameters()]
-        optimizer = torch.optim.AdamW(parameters, lr=self.joint_lr)
+        optimizer = self.make_optimizer(parameters, self.joint_lr)
         mask = torch.as_tensor(training.dataset.mask, device=self.device)
         best, stale, best_state = float("inf"), 0, None
         for epoch in range(self.joint_epochs):
@@ -190,6 +196,9 @@ class DLModel(Model):
             states = keep_recent(torch.cat((states[:, 1:], fed_back[:, None]), dim=1), self.Nx + 1)
         errors = torch.stack(losses)
         return (1 - self.rollout_weight) * errors[0] + self.rollout_weight * errors.mean(), errors.detach()
+
+    def make_optimizer(self, parameters, lr):
+        return self.OPTIMIZERS[self.optimizer](parameters, lr=lr, weight_decay=self.weight_decay)
 
     @staticmethod
     def step_errors(prefix, steps):

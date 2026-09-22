@@ -76,6 +76,7 @@ class Dataset(TorchDataset):
         with np.load(metadata["grid_indices"]) as grid:
             self.mask = grid["mask"]
             self.grid_indices = (grid["rows"], grid["columns"])
+            self.volumes = grid["volumes"] if "volumes" in grid else None
         if self.mask.shape != shape[1:]:
             raise ValueError("Image mask does not match data")
         self._maps = {}  # Workers open their own read-only memory maps.
@@ -161,15 +162,25 @@ class ForecasterDataset(Dataset):
             return self.frames(case, start, stop)
         return self.latents[segment][start - first:stop - first]
 
-    def __len__(self):
-        return self.ends[-1]
-
-    def __getitem__(self, index):
+    def window(self, index):
         if index < 0 or index >= len(self):
             raise IndexError(index)
         segment = bisect_right(self.ends, index)
         case, start, _ = self.segments[segment]
-        t = start + self.length - 1 + (index - (self.ends[segment - 1] if segment else 0)) * self.stride
+        offset = index - (self.ends[segment - 1] if segment else 0)
+        t = start + self.length - 1 + offset * self.stride
+        return segment, case, t
+
+    def target_frames(self, index):
+        """Scaled image targets for scoring, even when __getitem__ returns latent targets."""
+        _, case, t = self.window(index)
+        return self.frames(case, t + 1, t + self.horizon + 1)
+
+    def __len__(self):
+        return self.ends[-1]
+
+    def __getitem__(self, index):
+        segment, case, t = self.window(index)
         states = self.states(segment, t - self.length + 1, t + 1)
         forcing = np.array(self.arrays(case)[1][t - self.length + 2:t + self.horizon + 1], dtype=np.float32) - 1
         forcing[:self.length - 1 - self.Ni] = 0

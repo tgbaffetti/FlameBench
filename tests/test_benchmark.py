@@ -11,7 +11,7 @@ from DataProcessing.Dataset import CompressorDataset, ForecasterDataset
 from DataProcessing.scaling import FeatureScaler
 from Baselines.OrderReduction.Linear.POD import POD
 from Baselines.Forecast.Classical.ARX import ARX
-from Baselines.Forecast.DL.networks import GRU, LSTM, Transformer
+from Baselines.Forecast.DL.networks import GRU, LSTM, CNN, Transformer
 from Experiments.metrics import FieldMetrics, gain_phase, relative_l2
 from Experiments.evaluation import evaluate
 from Experiments.run import fit, test as run_test, hpo
@@ -19,7 +19,7 @@ from Experiments.paths import run_directory
 
 
 # Four cells on a 3 x 2 image; the other two pixels are invalid.
-GRID = ImageGrid(np.array([[0, 0, 0], [1, 0, 0], [0, 0, 1], [1, 0, 2]]))
+GRID = ImageGrid(np.array([[0, 0, 0], [1, 0, 0], [0, 0, 1], [1, 0, 2]]), volumes=[1., 2., 3., 4.])
 # The 81-frame fixture needs 10 blocks of 8 frames (the default 20 would give 4 frames).
 SETTINGS = {'validation_fraction': 0.2, 'blocks': 10, 'K_eval': 3, 'logging': {'wandb': {'mode': 'disabled'}}}
 
@@ -39,10 +39,16 @@ def metadata(tmp_path):
         np.save(x_path,GRID.images(data.astype(np.float32)));np.save(u_path,phi.astype(np.float32))
         cases.append({'name':name,'split':split,'waveform':'step','duration':0.04,
                       'data':str(x_path),'phi':str(u_path)})
-    volumes = tmp_path/'volumes.npy'; np.save(volumes,[1.,2.,3.,4.])
     GRID.save(tmp_path/'grid.npz')
     return {'dt':0.0005,'fields':['T','mix:Q'],'initial_snapshot_is_steady':True,
-            'cell_volumes':str(volumes),'grid_indices':str(tmp_path/'grid.npz'),'cases':cases}
+            'grid_indices':str(tmp_path/'grid.npz'),'cases':cases}
+
+
+def small(cls, size, **kwargs):
+    """A one-layer forecaster of width 8 for states of `size` (the CNN kernel 1 fits any window)."""
+    width = {'hidden': 8, 'layers': 1} if cls is Transformer else {'channels': [8], 'kernel_size': 1} if cls is CNN \
+        else {'hiddens': [8]}
+    return cls(input_size=size + 1, output_size=size, **width, **kwargs)
 
 
 def windows(states, forcing, target):
@@ -126,7 +132,7 @@ def test_metrics_and_harmonics():
     assert m['phase_error_deg']==pytest.approx(np.degrees(0.2))
 
 
-@pytest.mark.parametrize('cls',[GRU,LSTM,Transformer])
+@pytest.mark.parametrize('cls',[GRU,LSTM,CNN,Transformer])
 @pytest.mark.parametrize('Ni',[0,5])
 @pytest.mark.parametrize('Nx',[0,2])
 def test_neural_fit_resume(cls,Nx,Ni,tmp_path):
@@ -135,11 +141,11 @@ def test_neural_fit_resume(cls,Nx,Ni,tmp_path):
     length=max(Nx,Ni)+1
     states=torch.randn(16,length,2)
     data=DataLoader(windows(states,torch.zeros(16,length),states[:,-1:]*0.9),batch_size=8)
-    model=cls(rank=2,Nx=Nx,Ni=Ni,hidden=8,layers=1,epochs=2)
+    model=small(cls,2,Nx=Nx,Ni=Ni,epochs=2)
     model.fit(data,data,directory=tmp_path)
     output=model.predict(states[:2].numpy(),np.zeros((2,length),dtype=np.float32))
     assert output.shape==(2,2) and np.isfinite(output).all()
-    resumed=cls(rank=2,Nx=Nx,Ni=Ni,hidden=8,layers=1,epochs=3)
+    resumed=small(cls,2,Nx=Nx,Ni=Ni,epochs=3)
     resumed.fit(data,data,directory=tmp_path,resume=True)
     assert torch.load(tmp_path/'last.pt',weights_only=False)['epoch']==2
 
@@ -168,7 +174,7 @@ def test_physical_metadata_required(metadata,tmp_path):
     with pytest.raises(ValueError,match='initial_snapshot'):
         evaluate(None,ForecasterDataset(metadata,'test',Nx=2),None,None,tmp_path)
     metadata['initial_snapshot_is_steady']=True
-    metadata['cell_volumes']=None
+    ImageGrid(np.array([[0, 0, 0], [1, 0, 0], [0, 0, 1], [1, 0, 2]])).save(metadata['grid_indices'])
     with pytest.raises(ValueError,match='physical cell volumes'):
         evaluate(None,ForecasterDataset(metadata,'test',Nx=2),None,None,tmp_path)
 
@@ -182,12 +188,12 @@ def test_reproducible_resume(tmp_path):
     def loaders():
         return DataLoader(data,batch_size=4,shuffle=True),DataLoader(data,batch_size=4)
     seed_everything(7)
-    full=GRU(rank=2,Nx=2,Ni=0,hidden=8,layers=1,epochs=3)
+    full=small(GRU,2,Nx=2,Ni=0,epochs=3)
     full.fit(*loaders())
     seed_everything(7)
-    part=GRU(rank=2,Nx=2,Ni=0,hidden=8,layers=1,epochs=1)
+    part=small(GRU,2,Nx=2,Ni=0,epochs=1)
     part.fit(*loaders(),directory=tmp_path)
-    continued=GRU(rank=2,Nx=2,Ni=0,hidden=8,layers=1,epochs=3)
+    continued=small(GRU,2,Nx=2,Ni=0,epochs=3)
     continued.fit(*loaders(),directory=tmp_path,resume=True)
     for key,value in full.network.state_dict().items():
         torch.testing.assert_close(value,continued.network.state_dict()[key],rtol=0,atol=0)
@@ -326,6 +332,11 @@ def test_forcing_padding_in_rollouts(metadata,tmp_path):
     validation_error(recorder,pod,validation)
     case,lo,_=validation.segments[0]
     np.testing.assert_allclose(recorder.inputs[0][1][0],np.load(case['phi'])[lo+1:lo+6]-1,atol=1e-6)
+    latent_validation=ForecasterDataset(metadata,'validation',Nx=0,Ni=4,horizon=3,stride=3,
+                                        blocks=10,scaler=scaler,compressor=pod)
+    recorder=Recorder()
+    assert np.isfinite(validation_error(recorder,pod,latent_validation))
+    np.testing.assert_allclose(recorder.inputs[0][1][0],np.load(case['phi'])[lo+1:lo+6]-1,atol=1e-6)
 
 
 @pytest.mark.parametrize('Nx,Ni',[(-1,0),(0,-1),(1.5,0),(0,True)])
@@ -334,11 +345,11 @@ def test_invalid_histories(metadata,Nx,Ni):
         ForecasterDataset(metadata,'train',Nx=Nx,Ni=Ni)
 
 
-@pytest.mark.parametrize('cls',[GRU,LSTM,Transformer])
+@pytest.mark.parametrize('cls',[GRU,LSTM,CNN,Transformer])
 @pytest.mark.parametrize('Nx,Ni',[(0,0),(4,1),(1,5)])
 def test_forcing_enters_neural_core(cls,Nx,Ni):
     torch.manual_seed(19)
-    model=cls(rank=2,Nx=Nx,Ni=Ni,hidden=8,layers=1)
+    model=small(cls,2,Nx=Nx,Ni=Ni)
     network=model.network
     network.eval()
     length=max(Nx,Ni)+1
@@ -346,8 +357,9 @@ def test_forcing_enters_neural_core(cls,Nx,Ni):
     forcing=torch.randn(2,length,requires_grad=True)
     core_outputs=[]
     def capture_core(module,args,output):
-        core_outputs.append(output if cls is Transformer else output[0])
-    hook=network.core.register_forward_hook(capture_core)
+        core_outputs.append(output)
+    # The layers before the last-row readout and the linear head.
+    hook=network.layers[-3].register_forward_hook(capture_core)
     prediction=network(states,forcing)
     # Every supplied forcing value must affect the core, before the prediction head.
     core_gradient=torch.autograd.grad(core_outputs[0][:,-1,0].sum(),forcing,retain_graph=True)[0]
@@ -462,15 +474,15 @@ def test_unknown_config_keys_raise():
     from Baselines.OrderReduction.DL.CAE import CAE
     with pytest.raises(ValueError, match='batch_szie'):
         check_config({'batch_szie': 3})
-    for build in (lambda: GRU(rank=2, hiden=8), lambda: ARX(aplha=1.0), lambda: CAE(chanels=2)):
+    for build in (lambda: GRU(input_size=3, output_size=2, hiden=8), lambda: ARX(aplha=1.0), lambda: CAE(chanels=2)):
         with pytest.raises(TypeError):
             build()
 
 
 def zero_increment_gru(**kwargs):
     # Zero increments: the prediction stays at the last state, so step errors are known exactly.
-    model=GRU(rank=1,Nx=0,Ni=0,hidden=2,layers=1,rollout_weight=0.5,**kwargs)
-    for p in model.network.head.parameters():
+    model=GRU(input_size=2,output_size=1,Nx=0,Ni=0,hiddens=[2],rollout_weight=0.5,**kwargs)
+    for p in model.network.layers[-1].parameters():
         torch.nn.init.zeros_(p)
     return model
 
@@ -485,11 +497,11 @@ def test_rollout_loss_combines_one_and_multi_step(loss,per_step):
     assert total.item()==pytest.approx(0.5*per_step[0]+0.5*np.mean(per_step))
     assert not steps.requires_grad
     with pytest.raises(ValueError,match='rollout_weight'):
-        GRU(rank=1,rollout_weight=1.5)
+        GRU(input_size=2,output_size=1,rollout_weight=1.5)
     with pytest.raises(ValueError,match='joint_epochs'):
-        GRU(rank=1,joint_epochs=-1)
+        GRU(input_size=2,output_size=1,joint_epochs=-1)
     with pytest.raises(ValueError,match='loss'):
-        GRU(rank=1,loss='l3')
+        GRU(input_size=2,output_size=1,loss='l3')
 
 
 def test_detach_rollout_cuts_gradient_through_fed_back_predictions():
@@ -497,7 +509,7 @@ def test_detach_rollout_cuts_gradient_through_fed_back_predictions():
     values,gradients=[],[]
     for detach in (False,True):
         torch.manual_seed(0)
-        model=GRU(rank=1,Nx=1,Ni=0,hidden=2,layers=1,detach_rollout=detach)
+        model=GRU(input_size=2,output_size=1,Nx=1,Ni=0,hiddens=[2],detach_rollout=detach)
         states,target=torch.randn(4,2,1),torch.randn(4,3,1)
         total,_=model.rollout_loss(states,torch.zeros(4,4),target)
         total.backward()
@@ -518,6 +530,6 @@ def test_validation_horizon_longer_than_training():
     train=DataLoader(windows(torch.randn(8,3,2),torch.zeros(8,4),torch.randn(8,2,2)),batch_size=4)
     val=DataLoader(windows(torch.randn(8,3,2),torch.zeros(8,7),torch.randn(8,5,2)),batch_size=4)
     logger=Logger()
-    GRU(rank=2,Nx=2,hidden=4,layers=1,epochs=1).fit(train,val,logger=logger)
+    small(GRU,2,Nx=2,epochs=1).fit(train,val,logger=logger)
     keys=[key for key in logger.rows[0] if key.startswith('validation/latent_step_')]
     assert len(keys)==5

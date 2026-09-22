@@ -27,7 +27,7 @@
     ],
     "kernel_size": 3,
     "stride": 2,
-    "padding": 1
+    "padding": 0
   },
   "dataset": {
     "Nx": 9,
@@ -36,8 +36,7 @@
   },
   "forecaster": {
     "name": "gru",
-    "hidden": 64,
-    "layers": 2,
+    "hiddens": [64, 64],
     "lr": 0.001,
     "epochs": 80,
     "patience": 20,
@@ -52,7 +51,7 @@
     }
   },
   "evaluation": {
-    "heat_release": false,
+    "heat_release": true,
     "initialization": "steady",
     "gain_phase_start": 0.5,
     "save_predictions": false

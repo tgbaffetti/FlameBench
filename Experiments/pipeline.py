@@ -56,8 +56,9 @@ class Pipeline:
         """Build and fit a forecaster on the latents of a frozen compressor; return it with its validation error."""
         training = self.windows(dataset_class, dataset_hyperparameters, "train", compressor)
         validation = self.windows(dataset_class, dataset_hyperparameters, "validation", compressor, validation=True)
-        forecaster = forecaster_class.build(hyperparameters, rank=compressor.rank, Nx=training.Nx, Ni=training.Ni,
-                                            device=self.device)
+        # A row holds a latent state and the forcing; the forecaster returns the next latent state.
+        forecaster = forecaster_class.build(hyperparameters, input_size=compressor.rank + 1, output_size=compressor.rank,
+                                            Nx=training.Nx, Ni=training.Ni, device=self.device)
         forecaster.fit(self.loader(training, shuffle=isinstance(forecaster, DLModel)), self.loader(validation),
                        logger=logger, directory=directory, resume=resume)
         return forecaster, self.validation_error(forecaster, compressor, dataset_class, dataset_hyperparameters)

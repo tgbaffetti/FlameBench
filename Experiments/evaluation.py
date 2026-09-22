@@ -34,20 +34,29 @@ def reconstruction_error(compressor, dataset, batch_size=16):
 def validation_error(forecaster, compressor, dataset, batch_size=16):
     """MSE of recursive forecasts on a scaled image ForecasterDataset, valid pixels only.
 
-    Each window is encoded, rolled out for all its targets (K_eval steps) and decoded; use
-    stride = horizon so every frame is compared once. A diverged forecast scores infinity.
+    Image windows are encoded before rollout. Latent windows from a compressed ForecasterDataset
+    are used directly, but still score against the corresponding scaled image targets. Use stride =
+    horizon for image validation so every frame is compared once. A diverged forecast scores
+    infinity.
     """
     sse = count = 0
-    for batch in DataLoader(dataset, batch_size=batch_size):
+    latent_dataset = getattr(dataset, "latents", None) is not None
+    for batch_index, batch in enumerate(DataLoader(dataset, batch_size=batch_size)):
         frames, forcing, target = (batch[key].numpy() for key in ("states", "forcing", "target"))
         size, length = frames.shape[:2]
-        states = compressor.encode(frames.reshape(size * length, *frames.shape[2:])).reshape(size, length, -1)
-        states = keep_recent(states, dataset.Nx + 1)
+        if latent_dataset:
+            states = keep_recent(frames, dataset.Nx + 1)
+            indices = range(batch_index * batch_size, batch_index * batch_size + size)
+            target_fields = np.stack([dataset.target_frames(index) for index in indices])
+        else:
+            states = compressor.encode(frames.reshape(size * length, *frames.shape[2:])).reshape(size, length, -1)
+            states = keep_recent(states, dataset.Nx + 1)
+            target_fields = target
         for step in range(target.shape[1]):
             predicted = forecaster.predict(states, keep_recent(forcing[:, step:step + length], dataset.Ni + 1))
             if not np.isfinite(predicted).all():
                 return float("inf")
-            error = (compressor.decode(predicted) - target[:, step])[..., dataset.mask]
+            error = (compressor.decode(predicted) - target_fields[:, step])[..., dataset.mask]
             sse += float(np.square(error, dtype=np.float64).sum())
             count += error.size
             states = keep_recent(np.concatenate((states[:, 1:], predicted[:, None]), axis=1), dataset.Nx + 1)
@@ -75,11 +84,9 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
 
     volumes = None
     if heat_release:
-        if not metadata.get("cell_volumes"):
-            raise ValueError("Integrated Q requires physical cell volumes; set cell_volumes or explicitly disable heat_release")
-        volumes = np.load(metadata["cell_volumes"], allow_pickle=False)
-        if volumes.shape != (len(dataset.grid_indices[0]),) or not np.isfinite(volumes).all() or np.any(volumes <= 0):
-            raise ValueError("Cell volumes must be finite, positive, and aligned with cells")
+        if dataset.volumes is None:
+            raise ValueError("Integrated Q requires physical cell volumes; run prepare with the grid or disable heat_release")
+        volumes = dataset.volumes.astype(np.float64)
         q_index = metadata["fields"].index("mix:Q")
     results = {}
     length = dataset.length
