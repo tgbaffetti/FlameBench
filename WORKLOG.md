@@ -394,6 +394,23 @@ Both train reliably on seeds 42/43/44 (unlike DeepONet k=16). Mean +/- sd over 3
   NARX/ARX are deterministic given the data so seeding is not needed for them.
 
 
+## 2026-09-22 (evening) — dataset move (commit 54313f9) broke every config; repointed
+Another session moved the dataset to `/srv/mlg/shared/FlameBench/` (Data/ and data/ are now
+symlinks) and made `DataProcessing/metadata.json` canonical with a `data_root` key. **The shared
+`Data/metadata.json` now describes the IMAGE dataset** (`Images/...`, layout
+`time,field,z_reversed,x`, `cell_volumes: null`) — it is not a compat copy of the cell metadata.
+- Consequence: all 33 configs still said `"metadata": "Data/metadata.json"`, so runs loaded 4-D
+  image tensors and died on the WindowDataset shape check. Repointed all of them to
+  `DataProcessing/metadata.json` (commit above). Verified: TestDataset loads (11, 21334) and
+  cell_volumes resolves. 83 tests pass.
+- **This invalidates one conclusion from earlier today**: the DeepONet k=16 lr=3e-4 seed-44
+  failure was environmental (wrong metadata), not a training divergence. lr=3e-4 succeeded on
+  seeds 42 and 43; seed 44 is being rerun. The lr=1e-3 failures (epochs 15 and 22, nonfinite
+  loss) predate the move and remain genuine.
+- Anyone with older result dirs: `--resume` of pre-move runs fails the metadata.resolved.json
+  check, and `Data/metadata_cells.json` is the cell metadata inside the shared tree.
+
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.
