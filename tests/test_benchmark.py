@@ -585,3 +585,33 @@ def test_test_command_tolerates_diverged_case(metadata,tmp_path,monkeypatch):
         pickle.dump(_Amplifier(),f)
     results=run_test(cfg)
     assert results['sine']['status']=='diverged'
+
+
+def test_narx_cross_alpha_penalizes_only_bilinear_block():
+    from Baselines.Forecast.Classical.ARX import NARX
+    model=NARX(alpha=2.0,cross_alpha=50.0)
+    model.state_width,model.forcing_width=4,3   # layout: 4 state | 3 phi | 12 cross | bias
+    p=model.penalties(4+3+12+1)
+    np.testing.assert_allclose(p[:7],2.0)
+    np.testing.assert_allclose(p[7:19],50.0)
+    assert p[-1]==0.0
+    # Default keeps a single global penalty.
+    plain=NARX(alpha=2.0); plain.state_width,plain.forcing_width=4,3
+    np.testing.assert_allclose(plain.penalties(20)[:-1],2.0)
+    with pytest.raises(ValueError,match='cross_alpha'):
+        NARX(alpha=1.0,cross_alpha=-1)
+
+
+def test_narx_cross_alpha_shrinks_bilinear_weights(metadata,tmp_path):
+    from Baselines.Forecast.Classical.ARX import NARX
+    train=TrainingDataset(metadata,Nx=1,Ni=1)
+    scaler=FeatureScaler().fit(train.snapshot_batches(8))
+    pod=POD(rank=2,batch_size=8).fit(train,scaler)
+    latent=LatentDataset(train,pod,scaler,tmp_path/'latent',batch_size=8)
+    loader=DataLoader(latent,batch_size=8)
+    loose=NARX(alpha=1e-6,cross_alpha=1e-6).fit(loader)
+    tight=NARX(alpha=1e-6,cross_alpha=1e4).fit(loader)
+    start=loose.state_width+loose.forcing_width
+    assert np.abs(tight.weights[start:-1]).max()<np.abs(loose.weights[start:-1]).max()
+    # The linear block keeps its freedom.
+    assert np.abs(tight.weights[:start]).max()>0.1*np.abs(loose.weights[:start]).max()
