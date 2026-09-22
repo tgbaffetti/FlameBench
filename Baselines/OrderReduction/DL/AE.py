@@ -50,11 +50,11 @@ class AE(Compressor):
         validation_loader = make_loader(validation, self.batch_size, **(loader_options or {}))
         best, best_state = float("inf"), None
         epochs = tqdm(range(self.epochs), desc=f"{type(self).__name__} fit")
-        for epoch in epochs:
+        for epoch in tqdm(epochs, desc="Epochs"):
             self.encoder.train()
             self.decoder.train()
             total = count = 0
-            for x in tqdm(training_loader, desc="training", leave=False):
+            for x in training_loader:
                 x = x.to(self.device, non_blocking=True)
                 encoded = self.encoder(x)
                 if self.beta:
@@ -78,7 +78,7 @@ class AE(Compressor):
             self.encoder.eval()
             self.decoder.eval()
             with torch.no_grad():
-                for x in tqdm(validation_loader, desc="validation", leave=False):
+                for x in validation_loader:
                     x = x.to(self.device, non_blocking=True)
                     z = self.encoder(x)[:, :self.rank]
                     difference = (self.decoder(z) - x)[..., mask]
