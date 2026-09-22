@@ -6,7 +6,7 @@ import torch
 from tqdm import tqdm
 from DataProcessing.loading import make_loader
 from DataProcessing.Dataset import keep_recent
-from .metrics import FieldMetrics, relative_l2, gain_phase
+from .metrics import FieldMetrics, FieldSSIM, relative_l2, gain_phase
 from utils import write_json
 
 
@@ -106,6 +106,13 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
         scaler.inverse(compressor.decode(warmup_latent))
         synchronize(model)
         metrics, elapsed = FieldMetrics(metadata["fields"]), 0.0
+        # SSIM data range: range of each reference field over the case, read in chunks.
+        low = high = None
+        for start in range(lo, hi, 256):
+            chunk = cells(np.asarray(x[start:min(start + 256, hi)]))
+            low = chunk.min(axis=(0, 2)) if low is None else np.minimum(low, chunk.min(axis=(0, 2)))
+            high = chunk.max(axis=(0, 2)) if high is None else np.maximum(high, chunk.max(axis=(0, 2)))
+        ssim = FieldSSIM(metadata["fields"], dataset.mask, high - low)
         q_ref, q_pred = [], []
         output = None
         if save_predictions:
@@ -121,6 +128,7 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
             elapsed += time.perf_counter()-begin
             reference = np.array(x[k])
             metrics.update(cells(predicted), cells(reference))
+            ssim.update(predicted, reference)
             if output is not None:
                 output[k-first] = predicted
             if volumes is not None:
@@ -130,7 +138,7 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
         if output is not None:
             output.flush()
             del output
-        result = metrics.result()
+        result = {**metrics.result(), **ssim.result()}
         result.update({"forecast_steps": hi-first, "first_predicted_index": first,
                        "inference_seconds": elapsed, "seconds_per_step": elapsed/(hi-first),
                        "timing_scope": "latent transition + field decoding + inverse scaling; excludes initial encoding, IO, metrics",

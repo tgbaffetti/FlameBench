@@ -1,5 +1,6 @@
 """Physical-unit metrics; evaluation statistics never feed training."""
 import numpy as np
+from scipy.ndimage import gaussian_filter
 
 
 class FieldMetrics:
@@ -33,6 +34,39 @@ class FieldMetrics:
                 "field_rmse": dict(zip(self.fields, map(float, rmse))),
                 "mean_nrmse": float(np.mean(nrmse)) if all(x is not None for x in nrmse) else None,
                 "undefined_fields": [f for f, value in zip(self.fields, nrmse) if value is None]}
+
+
+class FieldSSIM:
+    """Mean structural similarity of each field over the frames of a rollout.
+
+    SSIM of Wang et al. (2004): Gaussian window with sigma 1.5, K1 = 0.01, K2 = 0.03. data_range
+    is the range of each reference field over the whole case. Invalid pixels are set to zero in
+    both images and the SSIM map is averaged over valid pixels only.
+    """
+    def __init__(self, fields, mask, data_range):
+        self.fields, self.mask = list(fields), np.asarray(mask, dtype=bool)
+        data_range = np.asarray(data_range, dtype=np.float64)[:, None, None]
+        self.c1, self.c2 = (0.01 * data_range) ** 2, (0.03 * data_range) ** 2
+        self.total = np.zeros(len(fields), dtype=np.float64)
+        self.count = 0
+
+    def update(self, predicted, reference):
+        """predicted, reference: (field, height, width) images."""
+        def blur(image):
+            return gaussian_filter(image, 1.5, truncate=3.5, axes=(1, 2))
+        p = np.where(self.mask, predicted, 0).astype(np.float64)
+        r = np.where(self.mask, reference, 0).astype(np.float64)
+        mean_p, mean_r = blur(p), blur(r)
+        var_p, var_r = blur(p * p) - mean_p ** 2, blur(r * r) - mean_r ** 2
+        covariance = blur(p * r) - mean_p * mean_r
+        ssim = ((2 * mean_p * mean_r + self.c1) * (2 * covariance + self.c2)
+                / ((mean_p ** 2 + mean_r ** 2 + self.c1) * (var_p + var_r + self.c2)))
+        self.total += ssim[:, self.mask].mean(axis=1)
+        self.count += 1
+
+    def result(self):
+        ssim = self.total / self.count
+        return {"field_ssim": dict(zip(self.fields, map(float, ssim))), "mean_ssim": float(ssim.mean())}
 
 
 def relative_l2(predicted, reference):

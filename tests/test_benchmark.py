@@ -12,7 +12,7 @@ from DataProcessing.scaling import FeatureScaler
 from Baselines.OrderReduction.Linear.POD import POD
 from Baselines.Forecast.Classical.ARX import ARX
 from Baselines.Forecast.DL.networks import GRU, LSTM, CNN, Transformer
-from Experiments.metrics import FieldMetrics, gain_phase, relative_l2
+from Experiments.metrics import FieldMetrics, FieldSSIM, gain_phase, relative_l2
 from Experiments.evaluation import evaluate
 from Experiments.run import fit, test as run_test, hpo
 from Experiments.paths import run_directory
@@ -240,7 +240,7 @@ def test_walkthrough_notebook(metadata,tmp_path,monkeypatch):
     assert headings==['## 1. Data preparation','## 2. Datasets','## 3. POD-ARX','## 4. POD-LSTM','## 5. CAE-ARX',
                       '## 6. HPO of POD-ARX','## 7. Results']
     # The notebook uses CAE's default 4x4 kernel; give this tiny fixture a valid image size.
-    notebook_grid = ImageGrid(np.array([[x, 0, z] for z in range(8) for x in range(8)]))
+    notebook_grid = ImageGrid(np.array([[x, 0, z] for z in range(8) for x in range(8)]), volumes=np.ones(64))
     notebook_grid.save(metadata['grid_indices'])
     for case in metadata['cases']:
         np.save(case['data'], notebook_grid.images(np.tile(GRID.cells(np.load(case['data'])), (1, 1, 16))))
@@ -269,7 +269,7 @@ def test_walkthrough_notebook(metadata,tmp_path,monkeypatch):
     for results in namespace['tests'].values():
         result=results['sine']
         assert np.isfinite(result['mean_nrmse'])
-        assert result['heat_release_status']=='explicitly_disabled'
+        assert np.isfinite(result['heat_release_relative_l2']) and 0<result['mean_ssim']<=1
         assert result['first_predicted_index']==1
     assert namespace['best']['dataset']['horizon']==1
     assert (namespace['output']/'hpo_pod_arx'/'seed_42'/'model.pkl').exists()
@@ -608,3 +608,16 @@ def test_fit_progress_is_plain_text(metadata, capsys):
     POD(rank=2).fit(dataset)
     output = capsys.readouterr().err
     assert 'POD snapshots' in output and 'POD SVD' in output and '100%' in output
+
+
+def test_field_ssim():
+    rng = np.random.default_rng(0)
+    mask = np.ones((20, 16), dtype=bool)
+    mask[:, :3] = False
+    reference = rng.normal(size=(2, 20, 16))
+    ssim = FieldSSIM(['a', 'b'], mask, np.ptp(reference, axis=(1, 2)))
+    ssim.update(np.where(mask, reference, 99.0), reference)  # Invalid pixels do not count.
+    assert ssim.result()['mean_ssim'] == pytest.approx(1)
+    noisy = FieldSSIM(['a', 'b'], mask, np.ptp(reference, axis=(1, 2)))
+    noisy.update(reference + rng.normal(size=reference.shape), reference)
+    assert all(value < 0.9 for value in noisy.result()['field_ssim'].values())

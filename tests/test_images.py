@@ -83,6 +83,7 @@ def test_image_pipeline_metrics(tmp_path, kind):
     result = evaluate(Constant(), ForecasterDataset(metadata, 'test', Nx=0, Ni=0), Identity(), scaler, tmp_path)['test']
     assert result['mean_nrmse'] == pytest.approx(0, abs=1e-6)
     assert result['heat_release_relative_l2'] == pytest.approx(0, abs=1e-6)
+    assert result['mean_ssim'] == pytest.approx(1)  # Exact forecast; invalid pixels (999) are ignored.
     q = np.load(tmp_path / 'test_Q.npz')
     np.testing.assert_allclose(q['reference'], 34)
 

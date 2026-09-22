@@ -33,8 +33,10 @@ class ImageGrid:
     def read(cls, path):
         import pyvista as pv
         mesh = pv.read(path)
-        # The wedge cells on the axis come out with negative volume (their node ordering).
-        volumes = np.abs(mesh.compute_cell_sizes(length=False, area=False, volume=True).cell_data["Volume"])
+        # Legacy volumes, but with the absolute value: the wedge cells on the axis come out
+        # negative only because of their node ordering.
+        volumes = np.abs(mesh.compute_cell_sizes(length=False, area=True, volume=True).cell_data["Volume"])
+        volumes = volumes.astype(np.float32)
         return cls(mesh.cell_centers().points, volumes)
 
     def images(self, cells):
