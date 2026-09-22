@@ -1,0 +1,150 @@
+{
+  "dataset": {
+    "Nf": 11,
+    "Ncells": 21334,
+    "data_paths": [
+      "data/sineSweep_f1_f80_A02.npy",
+      "data/sineSweep_f1_f80_A04.npy"
+    ],
+    "phi_paths": [
+      "data/phi_sineSweep_f1_f80_A02.npy",
+      "data/phi_sineSweep_f1_f80_A04.npy"
+    ],
+    "grid_path": "data/xyz.npy"
+  },
+
+  "models": {
+
+    "pod-transformer": {
+      "training": {
+        "epochs": 1000,
+        "batch_size": 64,
+        "lr": 0.0009523860067976268,
+        "n_past": 10,
+        "scheduler": {
+          "warmup_epochs": 12,
+          "initial_lr_divisor": 5.150778410713291,
+          "decay_every_epochs": 82,
+          "decay_gamma": 0.7569689280096408
+        },
+        "save_checkpoint_each_epoch": true
+      },
+      "architecture": {
+        "rank_POD": 10,
+        "transformer_embed_dim": 64,
+        "transformer_layers": 2,
+        "transformer_heads": 8,
+        "transformer_hidden_dim": 256
+      },
+      "output": {
+        "models_dir": "train_results/models_POD10_Transformer"
+      }
+    },
+
+    "ae-transformer": {
+      "training": {
+        "epochs": 500,
+        "batch_size": 32,
+        "lr": 0.0005,
+        "n_past": 10,
+        "scheduler": {
+          "warmup_epochs": 10,
+          "initial_lr_divisor": 5.0,
+          "decay_every_epochs": 60,
+          "decay_gamma": 0.8
+        },
+        "save_checkpoint_each_epoch": true
+      },
+      "architecture": {
+        "latent_dim": 10,
+        "encoder_hidden": [1024, 256, 64],
+        "decoder_hidden": [64, 256, 1024],
+        "transformer_embed_dim": 64,
+        "transformer_layers": 2,
+        "transformer_heads": 8,
+        "transformer_hidden_dim": 256,
+        "weight_reconstruction": 1.0,
+        "weight_latent_pred": 1.0
+      },
+      "output": {
+        "models_dir": "train_results/models_AE_Transformer"
+      }
+    },
+
+    "lstm": {
+      "training": {
+        "epochs": 500,
+        "batch_size": 64,
+        "lr": 0.001,
+        "n_past": 10,
+        "save_checkpoint_each_epoch": true
+      },
+      "architecture": {
+        "rank_POD": 10,
+        "hidden_size": 128,
+        "num_layers": 2,
+        "dropout": 0.1
+      },
+      "output": { "models_dir": "train_results/models_LSTM" }
+    },
+
+    "fno3d": {
+      "training": {
+        "epochs": 300,
+        "batch_size": 8,
+        "lr": 0.001,
+        "n_past": 10,
+        "save_checkpoint_each_epoch": true
+      },
+      "architecture": {
+        "grid_shape": [256, 64],
+        "modes1": 12, "modes2": 12, "modes3": 8,
+        "width": 20
+      },
+      "output": { "models_dir": "train_results/models_FNO3D" }
+    },
+
+    "unet": {
+      "training": {
+        "epochs": 300,
+        "batch_size": 16,
+        "lr": 0.001,
+        "n_past": 10,
+        "save_checkpoint_each_epoch": true
+      },
+      "architecture": {
+        "grid_shape": [256, 64],
+        "channels": [32, 64, 128],
+        "padding_mode": "circular"
+      },
+      "output": { "models_dir": "train_results/models_UNet" }
+    },
+
+    "pod-arx": {
+      "training": {
+        "n_past": 5
+      },
+      "architecture": {
+        "rank_POD": 8,
+        "poly_degree": 1,
+        "use_ridge": false,
+        "alpha": 0.0
+      },
+      "output": { "models_dir": "train_results/models_PODARX" }
+    },
+
+    "pod-narx": {
+      "training": {
+        "n_past": 5
+      },
+      "architecture": {
+        "rank_POD": 8,
+        "poly_degree": 2,
+        "use_ridge": true,
+        "alpha": 0.01
+      },
+      "output": { "models_dir": "train_results/models_PODNARX" }
+    }
+
+  }
+}
