@@ -1,0 +1,14 @@
+# Same ranges as pyproject.toml; install with: pip install -r requirements.txt
+# For a GPU server, install the CUDA build of torch first (https://pytorch.org/get-started/locally/).
+numpy>=1.26,<3
+torch>=2.5,<3
+scikit-learn>=1.4,<2
+tensorboard>=2.16,<3
+wandb>=0.18,<1
+optuna>=4,<6
+python-dotenv>=1,<2
+pyvista>=0.46,<1
+
+# Tests and the walkthrough notebook
+pytest>=8
+jupyterlab>=4,<5
