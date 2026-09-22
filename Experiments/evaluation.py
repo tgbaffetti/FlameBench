@@ -1,8 +1,9 @@
-"""Recursive rollout from one observed initial state, with streaming field metrics."""
+"""Validation errors for model selection, and test rollouts with streaming field metrics."""
 import time
 from pathlib import Path
 import numpy as np
 import torch
+from torch.utils.data import DataLoader
 from DataProcessing.Dataset import keep_recent
 from .metrics import FieldMetrics, relative_l2, gain_phase
 from utils import write_json
@@ -17,6 +18,40 @@ def forcing_window(phi, target, length, Ni):
     values = np.array(phi[max(start, 0):target + 1], dtype=np.float32) - 1
     values = np.concatenate((np.zeros(max(-start, 0), dtype=np.float32), values))
     return keep_recent(values[None], Ni + 1)
+
+
+def reconstruction_error(compressor, dataset, batch_size=16):
+    """MSE of encode-decode on a scaled CompressorDataset, valid pixels only."""
+    sse = count = 0
+    for frames in DataLoader(dataset, batch_size=batch_size):
+        frames = frames.numpy()
+        error = (compressor.decode(compressor.encode(frames)) - frames)[..., dataset.mask]
+        sse += float(np.square(error, dtype=np.float64).sum())
+        count += error.size
+    return sse / count
+
+
+def validation_error(forecaster, compressor, dataset, batch_size=16):
+    """MSE of recursive forecasts on a scaled image ForecasterDataset, valid pixels only.
+
+    Each window is encoded, rolled out for all its targets (K_eval steps) and decoded; use
+    stride = horizon so every frame is compared once. A diverged forecast scores infinity.
+    """
+    sse = count = 0
+    for batch in DataLoader(dataset, batch_size=batch_size):
+        frames, forcing, target = (batch[key].numpy() for key in ("states", "forcing", "target"))
+        size, length = frames.shape[:2]
+        states = compressor.encode(frames.reshape(size * length, *frames.shape[2:])).reshape(size, length, -1)
+        states = keep_recent(states, dataset.Nx + 1)
+        for step in range(target.shape[1]):
+            predicted = forecaster.predict(states, keep_recent(forcing[:, step:step + length], dataset.Ni + 1))
+            if not np.isfinite(predicted).all():
+                return float("inf")
+            error = (compressor.decode(predicted) - target[:, step])[..., dataset.mask]
+            sse += float(np.square(error, dtype=np.float64).sum())
+            count += error.size
+            states = keep_recent(np.concatenate((states[:, 1:], predicted[:, None]), axis=1), dataset.Nx + 1)
+    return sse / count
 
 
 def synchronize(model):
@@ -35,8 +70,6 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
     if initialization not in {"steady", "observed_history"}:
         raise ValueError("Unknown initialization protocol")
     def cells(frame):
-        if dataset.grid_indices is None:
-            return frame
         rows, columns = dataset.grid_indices
         return frame[..., rows, columns]
 
@@ -45,7 +78,7 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
         if not metadata.get("cell_volumes"):
             raise ValueError("Integrated Q requires physical cell volumes; set cell_volumes or explicitly disable heat_release")
         volumes = np.load(metadata["cell_volumes"], allow_pickle=False)
-        if volumes.shape != (len(dataset.grid_indices[0]) if dataset.grid_indices is not None else dataset.field_shape[-1],) or not np.isfinite(volumes).all() or np.any(volumes <= 0):
+        if volumes.shape != (len(dataset.grid_indices[0]),) or not np.isfinite(volumes).all() or np.any(volumes <= 0):
             raise ValueError("Cell volumes must be finite, positive, and aligned with cells")
         q_index = metadata["fields"].index("mix:Q")
     results = {}

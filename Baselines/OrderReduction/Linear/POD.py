@@ -8,21 +8,20 @@ from ..Compressor import Compressor
 class POD(Compressor):
     """Legacy randomized SVD, fitted on the full training matrix in memory.
 
-    Image inputs are gathered into original cell order before decomposition.
-    Frames arrive scaled from the dataset, with the scaler shared by all compressors.
+    Each image is first flattened to the vector of its valid pixels, in original cell order.
+    Frames arrive scaled from the dataset, with the scaler shared by all compressors. rank is
+    fixed, so there is nothing to tune. device is accepted for a uniform build and not used.
     """
     name = "pod"
 
-    def __init__(self, rank=16, batch_size=64):
+    def __init__(self, rank=16, batch_size=64, device=None):
         if rank < 1 or batch_size < 1:
             raise ValueError("Require rank >= 1 and batch_size >= 1")
         self.rank, self.batch_size = rank, batch_size
 
     def vectors(self, frames):
-        if self.grid_indices is not None:
-            rows, columns = self.grid_indices
-            frames = frames[..., rows, columns]
-        return frames.reshape(len(frames), -1)
+        rows, columns = self.grid_indices
+        return frames[..., rows, columns].reshape(len(frames), -1)
 
     def fit(self, dataset, **kwargs):
         self.shape = tuple(dataset.field_shape)
@@ -42,8 +41,6 @@ class POD(Compressor):
 
     def decode(self, latent):
         vectors = (latent @ self.U_r.T + self.mean.T).astype(np.float32)
-        if self.grid_indices is None:
-            return vectors.reshape(len(latent), *self.shape)
         rows, columns = self.grid_indices
         images = np.zeros((len(latent), *self.shape), dtype=np.float32)
         images[..., rows, columns] = vectors.reshape(len(latent), self.shape[0], len(rows))

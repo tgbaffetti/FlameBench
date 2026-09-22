@@ -7,7 +7,8 @@ partitions cover the whole forcing history (for example every frequency of a swe
 consecutive blocks is one segment. Samples never cross a segment edge, so no frame is used by both
 partitions, and the compressor and the forecaster see exactly the same frames.
 
-With a scaler, frames are feature-normalized; without one (to fit the scaler) they are raw.
+Frames are images (field, height, width) with a mask of valid pixels. With a scaler, frames are
+feature-normalized; without one (to fit the scaler) they are raw.
 """
 from bisect import bisect_right
 import numpy as np
@@ -41,7 +42,17 @@ def keep_recent(rows, count):
 
 
 class Dataset(TorchDataset):
-    """Frames of one partition, read lazily from memory-mapped trajectories."""
+    """Frames of one partition, read lazily from memory-mapped trajectories.
+
+    hyperparameters_ranges is the Optuna search space of the constructor keywords; build creates
+    a dataset from them, with context holding the values that are never tuned.
+    """
+    hyperparameters_ranges = {}
+
+    @classmethod
+    def build(cls, hyperparameters, **context):
+        return cls(**context, **hyperparameters)
+
     def __init__(self, metadata, partition, validation_fraction=0.2, blocks=20, scaler=None):
         if partition not in {"train", "validation", "test"}:
             raise ValueError(partition)
@@ -51,7 +62,7 @@ class Dataset(TorchDataset):
             if case["split"] != ("test" if partition == "test" else "training"):
                 continue
             x, phi = self.arrays(case)
-            if x.ndim not in (3, 4) or x.shape[1] != len(metadata["fields"]) or phi.shape != (len(x),):
+            if x.ndim != 4 or x.shape[1] != len(metadata["fields"]) or phi.shape != (len(x),):
                 raise ValueError(f"Invalid shape/alignment: {case['name']}")
             if shape is not None and x.shape[1:] != shape:
                 raise ValueError("All trajectories must share field/cell shape")
@@ -62,13 +73,11 @@ class Dataset(TorchDataset):
         if not self.segments:
             raise ValueError(f"No cases for {partition}")
         self.field_shape = shape
-        self.mask = self.grid_indices = None
-        if len(shape) == 3:
-            with np.load(metadata["grid_indices"]) as grid:
-                self.mask = grid["mask"]
-                self.grid_indices = (grid["rows"], grid["columns"])
-            if self.mask.shape != shape[1:]:
-                raise ValueError("Image mask does not match data")
+        with np.load(metadata["grid_indices"]) as grid:
+            self.mask = grid["mask"]
+            self.grid_indices = (grid["rows"], grid["columns"])
+        if self.mask.shape != shape[1:]:
+            raise ValueError("Image mask does not match data")
         self._maps = {}  # Workers open their own read-only memory maps.
 
     def arrays(self, case):
@@ -117,23 +126,28 @@ class ForecasterDataset(Dataset):
               forcing[k : k+length] and pads it again with keep_recent.
       target  (K, ...): x(t+1 .. t+K).
     With a compressor the states are latents, encoded once and kept in memory; without one they
-    are frames (joint training).
+    are frames (joint training). stride > 1 keeps every stride-th window only, e.g. stride = K
+    gives back-to-back rollouts that compare each frame once (validation).
     """
+    hyperparameters_ranges = {"Nx": {"type": "int", "low": 0, "high": 20},
+                              "Ni": {"type": "int", "low": 0, "high": 10},
+                              "horizon": {"type": "categorical", "choices": [1, 5, 10, 20]}}
+
     def __init__(self, metadata, partition, Nx=9, Ni=0, horizon=1, validation_fraction=0.2, blocks=20,
-                 scaler=None, compressor=None, batch_size=64):
+                 scaler=None, compressor=None, stride=1, batch_size=64):
         for value in (Nx, Ni, horizon):
             if type(value) is not int or value < 0:
                 raise ValueError("Nx, Ni and horizon must be nonnegative integers")
-        if horizon < 1:
-            raise ValueError("horizon must be a positive integer")
+        if horizon < 1 or stride < 1:
+            raise ValueError("horizon and stride must be positive integers")
         super().__init__(metadata, partition, validation_fraction, blocks, scaler)
-        self.Nx, self.Ni, self.horizon = Nx, Ni, horizon
+        self.Nx, self.Ni, self.horizon, self.stride = Nx, Ni, horizon, stride
         self.length = max(Nx, Ni) + 1
         self.ends, total = [], 0
         for case, start, stop in self.segments:
             if stop - start < self.length + horizon:
                 raise ValueError(f"Segment {case['name']} [{start}, {stop}) too short; use fewer blocks")
-            total += stop - start - self.length - horizon + 1
+            total += (stop - start - self.length - horizon) // stride + 1
             self.ends.append(total)
         self.latents = None
         if compressor is not None:
@@ -155,7 +169,7 @@ class ForecasterDataset(Dataset):
             raise IndexError(index)
         segment = bisect_right(self.ends, index)
         case, start, _ = self.segments[segment]
-        t = start + self.length - 1 + index - (self.ends[segment - 1] if segment else 0)
+        t = start + self.length - 1 + (index - (self.ends[segment - 1] if segment else 0)) * self.stride
         states = self.states(segment, t - self.length + 1, t + 1)
         forcing = np.array(self.arrays(case)[1][t - self.length + 2:t + self.horizon + 1], dtype=np.float32) - 1
         forcing[:self.length - 1 - self.Ni] = 0

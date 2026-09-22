@@ -6,6 +6,7 @@
   "cpu_threads": 4,
   "validation_fraction": 0.2,
   "blocks": 20,
+  "K_eval": 50,
   "batch_size": 64,
   "workers": 0,
   "preprocessing_batch_size": 64,
@@ -14,14 +15,18 @@
     "rank": 16,
     "batch_size": 64
   },
-  "model": {
+  "dataset": {
+    "Nx": 9,
+    "Ni": 0,
+    "horizon": 10
+  },
+  "forecaster": {
     "name": "transformer",
     "hidden": 64,
     "layers": 2,
     "lr": 0.001,
     "epochs": 100,
     "patience": 20,
-    "rollout_steps": 10,
     "rollout_weight": 0.5
   },
   "logging": {
@@ -36,7 +41,5 @@
     "initialization": "steady",
     "gain_phase_start": 0.5,
     "save_predictions": false
-  },
-  "Nx": 9,
-  "Ni": 0
+  }
 }

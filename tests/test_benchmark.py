@@ -6,6 +6,7 @@ import pytest
 import torch
 from torch.utils.data import DataLoader
 from DataProcessing.prepare import convert
+from DataProcessing.process4convolution import ImageGrid
 from DataProcessing.Dataset import CompressorDataset, ForecasterDataset
 from DataProcessing.scaling import FeatureScaler
 from Baselines.OrderReduction.Linear.POD import POD
@@ -15,6 +16,12 @@ from Experiments.metrics import FieldMetrics, gain_phase, relative_l2
 from Experiments.evaluation import evaluate
 from Experiments.run import fit, test as run_test, hpo
 from Experiments.paths import run_directory
+
+
+# Four cells on a 3 x 2 image; the other two pixels are invalid.
+GRID = ImageGrid(np.array([[0, 0, 0], [1, 0, 0], [0, 0, 1], [1, 0, 2]]))
+# The 81-frame fixture needs 10 blocks of 8 frames (the default 20 would give 4 frames).
+SETTINGS = {'validation_fraction': 0.2, 'blocks': 10, 'K_eval': 3, 'logging': {'wandb': {'mode': 'disabled'}}}
 
 
 @pytest.fixture
@@ -29,12 +36,13 @@ def metadata(tmp_path):
         spatial = np.array([[1,2,3,4], [2,4,3,1]],dtype=np.float32)
         data = 10 + state[:,None,None]*spatial + spatial[None]
         x_path, u_path = tmp_path/f'{name}.npy', tmp_path/f'phi_{name}.npy'
-        np.save(x_path,data.astype(np.float32));np.save(u_path,phi.astype(np.float32))
+        np.save(x_path,GRID.images(data.astype(np.float32)));np.save(u_path,phi.astype(np.float32))
         cases.append({'name':name,'split':split,'waveform':'step','duration':0.04,
                       'data':str(x_path),'phi':str(u_path)})
     volumes = tmp_path/'volumes.npy'; np.save(volumes,[1.,2.,3.,4.])
+    GRID.save(tmp_path/'grid.npz')
     return {'dt':0.0005,'fields':['T','mix:Q'],'initial_snapshot_is_steady':True,
-            'cell_volumes':str(volumes),'cases':cases}
+            'cell_volumes':str(volumes),'grid_indices':str(tmp_path/'grid.npz'),'cases':cases}
 
 
 def windows(states, forcing, target):
@@ -44,7 +52,7 @@ def windows(states, forcing, target):
 def scaled_pod(metadata, partition='train'):
     # 10 blocks of 8 frames: the 81-frame fixture is too short for the default 20 blocks.
     frames = CompressorDataset(metadata, partition, blocks=10)
-    scaler = FeatureScaler().fit(DataLoader(frames, batch_size=8))
+    scaler = FeatureScaler(frames.mask).fit(DataLoader(frames, batch_size=8))
     return scaler, POD(rank=2, batch_size=8).fit(CompressorDataset(metadata, partition, blocks=10, scaler=scaler))
 
 
@@ -74,13 +82,13 @@ def test_block_split_without_leakage(metadata):
     forecaster = ForecasterDataset(metadata, 'train', Nx=2, validation_fraction=0.25)
     assert forecaster.segments == train.segments
     assert len(forecaster) == sum(hi - lo - 3 for _, lo, hi in train.segments)
-    scaler = FeatureScaler().fit(DataLoader(train, batch_size=7))
-    full = np.stack([train[i].numpy() for i in range(len(train))])
+    scaler = FeatureScaler(train.mask).fit(DataLoader(train, batch_size=7))
+    full = np.stack([train[i].numpy() for i in range(len(train))])[..., train.mask]
     np.testing.assert_allclose(scaler.mean, full.astype('float64').mean(axis=(0, 2)), rtol=1e-6)
     # Changing validation values must not change fitted statistics.
     for case, lo, hi in val.segments:
         a = np.load(case['data'], mmap_mode='r+'); a[lo:hi] = 1e6; a.flush()
-    other = FeatureScaler().fit(DataLoader(CompressorDataset(metadata, 'train', validation_fraction=0.25), batch_size=5))
+    other = FeatureScaler(train.mask).fit(DataLoader(CompressorDataset(metadata, 'train', validation_fraction=0.25), batch_size=5))
     np.testing.assert_allclose(other.mean, scaler.mean)
 
 
@@ -98,7 +106,7 @@ def test_pod_arx_and_recursive_metrics(metadata,tmp_path):
     assert case['heat_release_relative_l2']<1e-5
     q=np.load(tmp_path/'eval'/'sine_Q.npz')
     x=np.load(metadata['cases'][-1]['data'])
-    np.testing.assert_allclose(q['reference'],x[1:,1]@np.array([1,2,3,4]),rtol=1e-6)
+    np.testing.assert_allclose(q['reference'],GRID.cells(x)[1:,1]@np.array([1,2,3,4]),rtol=1e-6)
 
 
 def test_metrics_and_harmonics():
@@ -138,21 +146,21 @@ def test_neural_fit_resume(cls,Nx,Ni,tmp_path):
 
 def test_full_pipeline_and_hpo(metadata,tmp_path):
     path=tmp_path/'metadata.json';path.write_text(json.dumps(metadata))
-    cfg={'metadata':str(path),'output':str(tmp_path/'run'),'run_name':'pod_arx_test','seed':42,'Nx':2,'Ni':1,'validation_fraction':0.2,
-         'compressor':{'name':'pod','rank':2,'batch_size':8},'model':{'name':'arx','alpha':1e-6},
-         'logging':{'wandb':{'mode':'disabled'}},'evaluation':{'heat_release':True}}
+    cfg={'metadata':str(path),'output':str(tmp_path/'run'),'run_name':'pod_arx_test','seed':42,**SETTINGS,
+         'compressor':{'name':'pod','rank':2,'batch_size':8},'dataset':{'Nx':2,'Ni':1,'horizon':1},
+         'forecaster':{'name':'arx','alpha':1e-6},'evaluation':{'heat_release':True}}
     score=fit(cfg)
     assert np.isfinite(score)
     assert run_test(cfg)['sine']['mean_nrmse']<0.01
     assert list((run_directory(cfg)/'tensorboard').glob('events.*'))
     with pytest.raises(FileExistsError): fit(cfg)
-    cfg['output']=str(tmp_path/'hpo')
-    hpo(cfg,2)
-    root=run_directory(cfg)
-    assert (root/'best.json').exists()
-    # Stage A (scaler + compressor) is fitted once at the HPO root and shared by trials.
-    assert (root/'preprocessing.pkl').exists() and not list(root.glob('trial_*/preprocessing.pkl'))
-    assert len(list(root.glob('trial_*/model.pkl')))==2
+    # Only alpha is tuned: Nx and Ni are fixed here (the fixture blocks are short) and ARX fixes horizon 1.
+    cfg.update(output=str(tmp_path/'hpo'),trials=2,dataset={'Nx':2,'Ni':1},forecaster={'name':'arx'})
+    best,results=hpo(cfg)
+    assert best['dataset']=={'Nx':2,'Ni':1,'horizon':1}
+    assert set(best['forecaster'])=={'name','alpha'} and best['compressor']=={'name':'pod','rank':2,'batch_size':8}
+    assert json.loads((run_directory(best)/'config.json').read_text())==best
+    assert np.isfinite(results['sine']['mean_nrmse'])
 
 
 def test_physical_metadata_required(metadata,tmp_path):
@@ -188,7 +196,7 @@ def test_reproducible_resume(tmp_path):
 def test_dataloader_workers(metadata):
     dataset=ForecasterDataset(metadata,'train',Nx=2,Ni=5)
     batch=next(iter(DataLoader(dataset,batch_size=4,num_workers=2)))
-    assert batch['states'].shape==(4,6,2,4)
+    assert batch['states'].shape==(4,6,2,3,2)
     assert batch['forcing'].shape==(4,6)
     torch.testing.assert_close(batch['target'][0],dataset[0]['target'])
 
@@ -223,7 +231,8 @@ def test_walkthrough_notebook(metadata,tmp_path,monkeypatch):
     assert notebook['nbformat']==4
     headings=[''.join(c['source']).splitlines()[0] for c in notebook['cells']
               if c['cell_type']=='markdown' and ''.join(c['source']).startswith('## ')]
-    assert headings==['## 1. Data preparation','## 2. Compressor','## 3. Forecast','## 4. Evaluation']
+    assert headings==['## 1. Data preparation','## 2. Datasets','## 3. POD-ARX','## 4. POD-LSTM','## 5. CAE-ARX',
+                      '## 6. HPO of POD-ARX','## 7. Results']
     for case in metadata['cases']:
         case['source_data']=case['name']+'.npz'
         case['source_phi']='phi_'+case['name']+'.npz'
@@ -240,15 +249,19 @@ def test_walkthrough_notebook(metadata,tmp_path,monkeypatch):
         if first:
             # Only change data paths, small-example sizes, and the logging backend.
             namespace.update(metadata_path=metadata_path,raw_directory=tmp_path/'Raw',
-                             Nx=2,Ni=4,rank=2,batch_size=8,blocks=10,
+                             Nx=2,Ni=4,horizon=2,K_eval=3,rank=2,batch_size=8,blocks=10,
+                             lstm_epochs=1,cae_epochs=1,cae_channels=[2],hpo_fixed_dataset={'Nx':2,'Ni':4},
                              logging_config={'logging':{'wandb':{'mode':'disabled'}}})
             first=False
-    result=namespace['results']['sine']
-    # This is a notebook execution check, not a claim that longer history improves accuracy.
-    assert np.isfinite(result['mean_nrmse'])
-    assert result['heat_release_status']=='explicitly_disabled'
-    assert result['first_predicted_index']==1
-    assert (namespace['output']/'model.pkl').exists()
+    # This is a notebook execution check, not a claim about accuracy.
+    assert set(namespace['tests'])=={'pod_arx','pod_lstm','cae_arx','hpo_pod_arx'}
+    for results in namespace['tests'].values():
+        result=results['sine']
+        assert np.isfinite(result['mean_nrmse'])
+        assert result['heat_release_status']=='explicitly_disabled'
+        assert result['first_predicted_index']==1
+    assert namespace['best']['dataset']['horizon']==1
+    assert (namespace['output']/'hpo_pod_arx'/'seed_42'/'model.pkl').exists()
 
 
 @pytest.mark.parametrize('Nx,Ni,horizon',[(0,0,1),(4,1,1),(1,5,1),(2,1,4)])
@@ -281,8 +294,7 @@ def test_forecaster_windows(metadata,Nx,Ni,horizon):
 
 
 def test_forcing_padding_in_rollouts(metadata,tmp_path):
-    from Experiments.run import validation_rollout
-    from Experiments.evaluation import forcing_window
+    from Experiments.evaluation import forcing_window, validation_error
     # Predicting x(1) with 5 rows reads phi(-3..1) - 1: zero before time zero, and zero for
     # rows older than the last Ni + 1.
     np.testing.assert_allclose(forcing_window(np.array([1.3,1.3,1.3]),1,5,4),[[0,0,0,0.3,0.3]],atol=1e-6)
@@ -309,9 +321,9 @@ def test_forcing_padding_in_rollouts(metadata,tmp_path):
     fields=np.load(metadata['cases'][-1]['data'])
     np.testing.assert_allclose(observed.inputs[0][0][0,-1],pod.encode(scaler.transform(fields[4:5]))[0],atol=1e-6)
     np.testing.assert_allclose(observed.inputs[0][1][0],phi[1:6]-1,atol=1e-6)
-    validation=ForecasterDataset(metadata,'validation',Nx=0,Ni=4,blocks=10,scaler=scaler)
+    validation=ForecasterDataset(metadata,'validation',Nx=0,Ni=4,horizon=3,stride=3,blocks=10,scaler=scaler)
     recorder=Recorder()
-    validation_rollout(recorder,pod,validation)
+    validation_error(recorder,pod,validation)
     case,lo,_=validation.segments[0]
     np.testing.assert_allclose(recorder.inputs[0][1][0],np.load(case['phi'])[lo+1:lo+6]-1,atol=1e-6)
 
@@ -354,10 +366,9 @@ def test_multi_seed_cli_layout(metadata,tmp_path,monkeypatch):
     from Experiments.run import main
     metadata_path=tmp_path/'metadata.json'
     metadata_path.write_text(json.dumps(metadata))
-    cfg={'metadata':str(metadata_path),'output':str(tmp_path/'results'),'Nx':2,'Ni':0,
-         'validation_fraction':0.2,'compressor':{'name':'pod','rank':2,'batch_size':8},
-         'model':{'name':'arx','alpha':1e-6},'logging':{'wandb':{'mode':'disabled'}},
-         'evaluation':{'heat_release':True}}
+    cfg={'metadata':str(metadata_path),'output':str(tmp_path/'results'),**SETTINGS,
+         'compressor':{'name':'pod','rank':2,'batch_size':8},'dataset':{'Nx':2,'Ni':0},
+         'forecaster':{'name':'arx','alpha':1e-6},'evaluation':{'heat_release':True}}
     config_path=tmp_path/'config.json'
     config_path.write_text(json.dumps(cfg))
     monkeypatch.setattr(sys,'argv',['flamebench','run','--config',str(config_path),'--seeds','0','1'])
@@ -373,7 +384,7 @@ def test_multi_seed_cli_layout(metadata,tmp_path,monkeypatch):
         assert (directory/'metrics.json').exists()
         assert (directory/'model.pkl').exists()
         records=[json.loads(line) for line in (directory/'metrics.jsonl').read_text().splitlines()]
-        assert any('validation/rollout_field_mse' in row for row in records)
+        assert any('validation/field_mse' in row for row in records)
         assert any('test/sine/mean_nrmse' in row for row in records)
         assert list((directory/'tensorboard').glob('events.*'))
         assert not (directory/'evaluation').exists()
@@ -391,8 +402,6 @@ def test_run_directory_requires_explicit_group(tmp_path):
         run_directory(cfg)
     cfg['run_name']='pod_gru_20260920T120000Z'
     assert run_directory(cfg)==tmp_path/cfg['run_name']/'seed_7'
-    cfg['trial']=3
-    assert run_directory(cfg).name=='trial_0003'
     cfg['run_name']='../wrong'
     with pytest.raises(ValueError,match='single folder'):
         run_directory(cfg)
@@ -419,24 +428,18 @@ def test_wandb_seed_group_and_resume_id(tmp_path,monkeypatch):
     assert init.call_args.kwargs['resume']=='allow'
 
 
-@pytest.mark.parametrize('images', [False, True])
-def test_pod_matches_legacy(metadata, tmp_path, images):
+def test_pod_matches_legacy(metadata, tmp_path):
     from legacy.models import PODReducer
-    from DataProcessing.process4convolution import ImageGrid
     rng = np.random.default_rng(31)
     grid = ImageGrid(np.array([[1, 0, 0], [0, 0, 2], [0, 0, 0], [1, 0, 1]]))
-    if images:
-        path = tmp_path / 'grid.npz'
-        grid.save(path)
-        metadata['grid_indices'] = str(path)
+    grid.save(tmp_path / 'grid.npz')
     for case in metadata['cases']:
-        values = rng.normal(size=(81, 2, 4)).astype(np.float32)
-        np.save(case['data'], grid.images(values) if images else values)
+        np.save(case['data'], grid.images(rng.normal(size=(81, 2, 4)).astype(np.float32)))
     raw = CompressorDataset(metadata, 'train')
     scaler = FeatureScaler(raw.mask).fit(DataLoader(raw, batch_size=7))
     dataset = CompressorDataset(metadata, 'train', scaler=scaler)
     scaled = np.concatenate([x.numpy() for x in DataLoader(dataset, batch_size=11)])
-    vectors = grid.cells(scaled) if images else scaled
+    vectors = grid.cells(scaled)
     legacy = PODReducer(rank=3)
     legacy.fit(vectors)
     current = POD(rank=3, batch_size=7).fit(dataset)
@@ -446,9 +449,8 @@ def test_pod_matches_legacy(metadata, tmp_path, images):
     np.testing.assert_allclose(current.encode(scaled), expected_z, atol=1e-5)
     expected = legacy.decode_torch(torch.from_numpy(expected_z), vectors.shape[1:]).numpy()
     decoded = current.decode(expected_z)
-    np.testing.assert_allclose(grid.cells(decoded) if images else decoded, expected, atol=1e-5)
-    if images:
-        assert not decoded[..., ~grid.mask].any()
+    np.testing.assert_allclose(grid.cells(decoded), expected, atol=1e-5)
+    assert not decoded[..., ~grid.mask].any()
     other = POD(rank=3, batch_size=13).fit(dataset)
     np.testing.assert_allclose(other.U_r, current.U_r, atol=1e-5)
 
@@ -467,7 +469,7 @@ def test_unknown_config_keys_raise():
 
 def zero_increment_gru(**kwargs):
     # Zero increments: the prediction stays at the last state, so step errors are known exactly.
-    model=GRU(rank=1,Nx=0,Ni=0,hidden=2,layers=1,rollout_steps=3,rollout_weight=0.5,**kwargs)
+    model=GRU(rank=1,Nx=0,Ni=0,hidden=2,layers=1,rollout_weight=0.5,**kwargs)
     for p in model.network.head.parameters():
         torch.nn.init.zeros_(p)
     return model
@@ -478,14 +480,14 @@ def zero_increment_gru(**kwargs):
 def test_rollout_loss_combines_one_and_multi_step(loss,per_step):
     model=zero_increment_gru(loss=loss)
     target=torch.tensor([[[1.],[2.],[3.]]])
-    total,steps=model.rollout_loss(torch.zeros(1,1,1),torch.zeros(1,3),target,3)
+    total,steps=model.rollout_loss(torch.zeros(1,1,1),torch.zeros(1,3),target)
     np.testing.assert_allclose(steps.numpy(),per_step)
     assert total.item()==pytest.approx(0.5*per_step[0]+0.5*np.mean(per_step))
     assert not steps.requires_grad
-    with pytest.raises(ValueError,match='rollout'):
-        GRU(rank=1,rollout_steps=0)
-    with pytest.raises(ValueError,match='rollout'):
+    with pytest.raises(ValueError,match='rollout_weight'):
         GRU(rank=1,rollout_weight=1.5)
+    with pytest.raises(ValueError,match='joint_epochs'):
+        GRU(rank=1,joint_epochs=-1)
     with pytest.raises(ValueError,match='loss'):
         GRU(rank=1,loss='l3')
 
@@ -495,9 +497,9 @@ def test_detach_rollout_cuts_gradient_through_fed_back_predictions():
     values,gradients=[],[]
     for detach in (False,True):
         torch.manual_seed(0)
-        model=GRU(rank=1,Nx=1,Ni=0,hidden=2,layers=1,rollout_steps=3,detach_rollout=detach)
+        model=GRU(rank=1,Nx=1,Ni=0,hidden=2,layers=1,detach_rollout=detach)
         states,target=torch.randn(4,2,1),torch.randn(4,3,1)
-        total,_=model.rollout_loss(states,torch.zeros(4,4),target,3)
+        total,_=model.rollout_loss(states,torch.zeros(4,4),target)
         total.backward()
         values.append(total.item())
         gradients.append(torch.cat([p.grad.flatten() for p in model.network.parameters()]))
@@ -516,8 +518,6 @@ def test_validation_horizon_longer_than_training():
     train=DataLoader(windows(torch.randn(8,3,2),torch.zeros(8,4),torch.randn(8,2,2)),batch_size=4)
     val=DataLoader(windows(torch.randn(8,3,2),torch.zeros(8,7),torch.randn(8,5,2)),batch_size=4)
     logger=Logger()
-    GRU(rank=2,Nx=2,hidden=4,layers=1,epochs=1,rollout_steps=2).fit(train,val,logger=logger)
+    GRU(rank=2,Nx=2,hidden=4,layers=1,epochs=1).fit(train,val,logger=logger)
     keys=[key for key in logger.rows[0] if key.startswith('validation/latent_step_')]
     assert len(keys)==5
-    with pytest.raises(ValueError,match='rollout steps'):
-        GRU(rank=2,Nx=2,hidden=4,layers=1,epochs=1,rollout_steps=3).fit(train,val)

@@ -2,32 +2,22 @@
   "metadata": "Data/metadata.json",
   "output": "Experiments/Results",
   "seed": 42,
-  "device": "cuda",
+  "device": "cpu",
   "cpu_threads": 4,
   "validation_fraction": 0.2,
   "blocks": 20,
   "K_eval": 50,
+  "trials": 2,
   "batch_size": 64,
   "workers": 0,
   "preprocessing_batch_size": 64,
   "compressor": {
     "name": "pod",
-    "rank": 16,
-    "batch_size": 64
+    "rank": 16
   },
-  "dataset": {
-    "Nx": 9,
-    "Ni": 0,
-    "horizon": 10
-  },
+  "dataset": {},
   "forecaster": {
-    "name": "gru",
-    "hidden": 64,
-    "layers": 2,
-    "lr": 0.001,
-    "epochs": 100,
-    "patience": 20,
-    "rollout_weight": 0.5
+    "name": "arx"
   },
   "logging": {
     "wandb": {

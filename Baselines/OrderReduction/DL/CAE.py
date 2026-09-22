@@ -11,7 +11,21 @@ from .AE import AE
 
 
 class CAE(AE):
+    """channels: one width per level. Tuning samples levels and base_channels instead, and build
+    turns them into doubling widths, e.g. levels 3 and base_channels 16 give (16, 32, 64)."""
     name = "cae"
+    hyperparameters_ranges = {**AE.hyperparameters_ranges,
+                              "levels": {"type": "int", "low": 1, "high": 4},
+                              "base_channels": {"type": "categorical", "choices": [8, 16, 32]},
+                              "kernel_size": {"type": "categorical", "choices": [3, 5]}}
+
+    @classmethod
+    def build(cls, hyperparameters, **context):
+        hyperparameters = dict(hyperparameters)
+        if "levels" in hyperparameters or "base_channels" in hyperparameters:
+            levels, base = hyperparameters.pop("levels", 3), hyperparameters.pop("base_channels", 16)
+            hyperparameters["channels"] = [base * 2 ** level for level in range(levels)]
+        return cls(**context, **hyperparameters)
 
     def __init__(self, channels=(16, 32, 64), kernel_size=3, stride=2, padding=1, **kwargs):
         super().__init__(**kwargs)
@@ -36,7 +50,7 @@ class CAE(AE):
                                           output_padding=(height_remainder, width_remainder)), nn.SiLU()] + decoder
         return encoder, decoder[:-1], (self.channels[-1], height, width)  # No activation on the output.
 
-    def build(self):
+    def build_networks(self):
         encoder, decoder, input_shape_chw = self.convolutions()
         size = input_shape_chw[0] * input_shape_chw[1] * input_shape_chw[2]
         self.encoder = nn.Sequential(*encoder, nn.Flatten(), nn.Linear(size, self.encoder_outputs))

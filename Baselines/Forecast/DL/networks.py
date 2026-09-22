@@ -46,7 +46,7 @@ class TransformerNetwork(nn.Module):
 
 
 class GRU(DLModel):
-    """training: DLModel keywords (device, lr, epochs, patience, frozen_epochs, rollout_*, loss)."""
+    """training: DLModel keywords (device, lr, epochs, patience, rollout_weight, loss, joint_*)."""
     name = "gru"
     def __init__(self, rank, Nx=9, Ni=0, hidden=64, layers=2, dropout=0.0, **training):
         super().__init__(RecurrentNetwork(rank, hidden, layers, dropout, "gru"), Nx, Ni, **training)
@@ -60,7 +60,8 @@ class LSTM(DLModel):
 
 class Transformer(DLModel):
     name = "transformer"
-    hyperparams = {**DLModel.hyperparams, "heads": {"type": "categorical", "choices": [2, 4, 8]}}
+    hyperparameters_ranges = {**DLModel.hyperparameters_ranges,
+                              "heads": {"type": "categorical", "choices": [2, 4, 8]}}
 
     def __init__(self, rank, Nx=9, Ni=0, hidden=64, layers=2, heads=4, feedforward=None, dropout=0.0, **training):
         network = TransformerNetwork(rank, max(Nx, Ni) + 1, hidden, layers, heads, feedforward, dropout)

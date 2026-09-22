@@ -1,12 +1,12 @@
 """Shared neural training, validation, checkpointing, and inference.
 
-Schedule: the first frozen_epochs train the forecaster on cached latents of a frozen compressor.
-fit_joint then unfreezes a torch compressor and trains encoder, forecaster and decoder together.
-Both phases use loss = (1 - rollout_weight) * step-1 error + rollout_weight * mean error over
-rollout_steps recursive (fed-back) predictions, as in TransformerROM's TransformerLoss. The error
-function is MSE, MAE, Huber or SmoothL1. Validation applies the same loss over every target step
-of the validation windows, a horizon that can be longer than rollout_steps, and also logs the
-error of each step.
+Schedule: fit trains the forecaster for `epochs` on the latents of a frozen compressor. fit_joint
+then unfreezes a torch compressor and trains encoder, forecaster and decoder together for
+`joint_epochs` with learning rate `joint_lr`. Both phases use loss = (1 - rollout_weight) * step-1
+error + rollout_weight * mean error over the K recursive (fed-back) predictions of each window,
+as in TransformerROM's TransformerLoss; K is the horizon of the dataset windows. The error
+function is MSE, MAE, Huber or SmoothL1. Validation windows may have a longer horizon (K_eval);
+validation also logs the error of each step.
 """
 import random
 from pathlib import Path
@@ -19,27 +19,26 @@ from ..Model import Model
 
 
 class DLModel(Model):
-    hyperparams = {"lr": {"type": "float", "low": 1e-5, "high": 3e-3, "log": True},
-                   "hidden": {"type": "categorical", "choices": [32, 64, 128]},
-                   "layers": {"type": "int", "low": 1, "high": 4},
-                   "dropout": {"type": "float", "low": 0.0, "high": 0.3},
-                   "rollout_steps": {"type": "categorical", "choices": [1, 5, 10, 20]},
-                   "rollout_weight": {"type": "float", "low": 0.0, "high": 1.0}}
+    """Keys starting with joint_ are tuned in the joint stage of the HPO, the others before it."""
+    hyperparameters_ranges = {"lr": {"type": "float", "low": 1e-5, "high": 3e-3, "log": True},
+                              "hidden": {"type": "categorical", "choices": [32, 64, 128]},
+                              "layers": {"type": "int", "low": 1, "high": 4},
+                              "dropout": {"type": "float", "low": 0.0, "high": 0.3},
+                              "rollout_weight": {"type": "float", "low": 0.0, "high": 1.0},
+                              "joint_lr": {"type": "float", "low": 1e-6, "high": 1e-3, "log": True},
+                              "joint_epochs": {"type": "categorical", "choices": [5, 10, 20]}}
 
-    def __init__(self, network, Nx=9, Ni=0, device="cpu", lr=1e-3, epochs=100, patience=20, frozen_epochs=None,
-                 rollout_steps=1, rollout_weight=0.5, loss="mse", detach_rollout=False):
-        frozen_epochs = epochs if frozen_epochs is None else frozen_epochs
-        if not 1 <= frozen_epochs <= epochs:
-            raise ValueError("Require 1 <= frozen_epochs <= epochs")
-        if type(rollout_steps) is not int or rollout_steps < 1 or not 0 <= rollout_weight <= 1:
-            raise ValueError("Require integer rollout_steps >= 1 and 0 <= rollout_weight <= 1")
+    def __init__(self, network, Nx=9, Ni=0, device="cpu", lr=1e-3, epochs=100, patience=20,
+                 rollout_weight=0.5, loss="mse", detach_rollout=False, joint_lr=1e-4, joint_epochs=0):
+        if epochs < 1 or joint_epochs < 0 or not 0 <= rollout_weight <= 1:
+            raise ValueError("Require epochs >= 1, joint_epochs >= 0 and 0 <= rollout_weight <= 1")
         error_function(loss)
         self.device = torch.device(device)
         self.network = network.to(self.device)
         self.Nx, self.Ni = Nx, Ni
-        self.lr, self.epochs, self.patience, self.frozen_epochs = lr, epochs, patience, frozen_epochs
-        self.rollout_steps, self.rollout_weight = rollout_steps, rollout_weight
-        self.loss, self.detach_rollout = loss, detach_rollout
+        self.lr, self.epochs, self.patience = lr, epochs, patience
+        self.joint_lr, self.joint_epochs = joint_lr, joint_epochs
+        self.rollout_weight, self.loss, self.detach_rollout = rollout_weight, loss, detach_rollout
 
     def fit(self, training, validation=None, logger=None, directory=None, resume=False, **kwargs):
         if validation is None:
@@ -60,13 +59,13 @@ class DLModel(Model):
             if torch.cuda.is_available() and state.get("cuda_rng"):
                 torch.cuda.set_rng_state_all([s.cpu() for s in state["cuda_rng"]])
             if stale >= self.patience:
-                start = self.frozen_epochs  # Early stopping already triggered; do not train further.
-        for epoch in range(start, self.frozen_epochs):
+                start = self.epochs  # Early stopping already triggered; do not train further.
+        for epoch in range(start, self.epochs):
             self.network.train()
             total = count = 0
             for batch in training:
                 optimizer.zero_grad(set_to_none=True)
-                loss, _ = self.rollout_loss(*self.tensors(batch), self.rollout_steps)
+                loss, _ = self.rollout_loss(*self.tensors(batch))
                 if not torch.isfinite(loss):
                     raise FloatingPointError("Nonfinite training loss")
                 loss.backward()
@@ -79,7 +78,7 @@ class DLModel(Model):
             val_steps = 0
             with torch.no_grad():
                 for batch in validation:
-                    loss, steps = self.rollout_loss(*self.tensors(batch), batch["target"].shape[1])
+                    loss, steps = self.rollout_loss(*self.tensors(batch))
                     val_total += loss.item() * len(batch["target"])
                     val_steps += steps.cpu() * len(batch["target"])
                     val_count += len(batch["target"])
@@ -115,20 +114,20 @@ class DLModel(Model):
         """Train encoder, forecaster and decoder on the rollout loss of the scaled image forecast.
 
         training/validation yield scaled image windows (ForecasterDataset without compressor);
-        runs epochs - frozen_epochs.
+        runs joint_epochs with learning rate joint_lr.
         A variational encoder contributes its posterior mean; the KL term is not used here.
         """
         modules = (compressor.encoder, self.network, compressor.decoder)
         parameters = [p for module in modules for p in module.parameters()]
-        optimizer = torch.optim.AdamW(parameters, lr=self.lr)
+        optimizer = torch.optim.AdamW(parameters, lr=self.joint_lr)
         mask = torch.as_tensor(training.dataset.mask, device=self.device)
         best, stale, best_state = float("inf"), 0, None
-        for epoch in range(self.frozen_epochs, self.epochs):
+        for epoch in range(self.joint_epochs):
             for module in modules:
                 module.train()
             total = count = 0
             for batch in training:
-                loss, _ = self.joint_loss(compressor, batch, mask, self.rollout_steps)
+                loss, _ = self.joint_loss(compressor, batch, mask)
                 if not torch.isfinite(loss):
                     raise FloatingPointError("Nonfinite joint training loss")
                 optimizer.zero_grad(set_to_none=True)
@@ -143,7 +142,7 @@ class DLModel(Model):
             val_steps = 0
             with torch.no_grad():
                 for batch in validation:
-                    loss, steps = self.joint_loss(compressor, batch, mask, batch["target"].shape[1])
+                    loss, steps = self.joint_loss(compressor, batch, mask)
                     val_total += loss.item() * len(batch["target"])
                     val_steps += steps.cpu() * len(batch["target"])
                     val_count += len(batch["target"])
@@ -168,10 +167,10 @@ class DLModel(Model):
             module.eval()
         return self
 
-    def rollout_loss(self, states, forcing, target, steps, decoder=None, mask=None):
-        """Return (combined loss, error per horizon step detached) over `steps` recursive steps.
+    def rollout_loss(self, states, forcing, target, decoder=None, mask=None):
+        """Return (combined loss, error per step detached) over one recursive step per target.
 
-        states (batch, length, rank); forcing (batch, >= length + steps - 1); target (batch, >= steps, ...),
+        states (batch, length, rank); forcing (batch, length + steps - 1); target (batch, steps, ...),
         as in a ForecasterDataset sample. Without a decoder, targets are latents; with one,
         predictions are decoded and compared on valid pixels. Each prediction becomes the newest
         state row for the next step. By default gradients flow back through those fed-back
@@ -181,9 +180,7 @@ class DLModel(Model):
         error = error_function(self.loss)
         length = states.shape[1]
         losses = []
-        if target.shape[1] < steps:
-            raise ValueError(f"Windows have {target.shape[1]} targets; {steps} rollout steps need more")
-        for step in range(steps):
+        for step in range(target.shape[1]):
             predicted = self.network(states, keep_recent(forcing[:, step:step + length], self.Ni + 1))
             output, reference = (predicted if decoder is None else decoder(predicted)), target[:, step]
             if mask is not None:
@@ -201,10 +198,10 @@ class DLModel(Model):
     def tensors(self, batch):
         return [batch[key].to(self.device) for key in ("states", "forcing", "target")]
 
-    def joint_loss(self, compressor, batch, mask, steps):
+    def joint_loss(self, compressor, batch, mask):
         frames, forcing, target = self.tensors(batch)
         z = compressor.encoder(frames.flatten(0, 1))[:, :compressor.rank].reshape(*frames.shape[:2], -1)
-        return self.rollout_loss(keep_recent(z, self.Nx + 1), forcing, target, steps, compressor.decoder, mask)
+        return self.rollout_loss(keep_recent(z, self.Nx + 1), forcing, target, compressor.decoder, mask)
 
     def to(self, device):
         self.device = torch.device(device)

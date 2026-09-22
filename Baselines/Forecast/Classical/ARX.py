@@ -10,7 +10,8 @@ class ARX(Model):
     ForecasterDataset sample never becomes a feature.
     """
     name = "arx"
-    hyperparams = {"alpha": {"type": "float", "low": 1e-8, "high": 1.0, "log": True}}
+    hyperparameters_ranges = {"alpha": {"type": "float", "low": 1e-8, "high": 1.0, "log": True}}
+    dataset_ranges = {"horizon": 1}  # The closed-form fit is one-step.
 
     def __init__(self, rank=None, Nx=9, Ni=0, device="cpu", alpha=1e-4):
         # rank and device are part of the shared constructor; ARX infers the rank from data.
@@ -49,9 +50,10 @@ class ARX(Model):
 
 class Constant(Model):
     name = "constant"
+    dataset_ranges = {"horizon": 1}
 
     def __init__(self, rank=None, Nx=9, Ni=0, device="cpu"):
-        pass
+        self.Nx, self.Ni = Nx, Ni
 
     def fit(self, training, validation=None, **kwargs):
         return self

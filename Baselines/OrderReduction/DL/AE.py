@@ -17,6 +17,9 @@ class AE(Compressor):
     matching the reported NRMSE. The KL term is averaged over latent dimensions, so beta equals
     the usual summed-KL beta divided by rank.
     """
+    hyperparameters_ranges = {"lr": {"type": "float", "low": 1e-4, "high": 3e-3, "log": True},
+                              "batch_size": {"type": "categorical", "choices": [8, 16, 32]}}
+
     def __init__(self, rank=16, epochs=20, batch_size=16, lr=1e-3, device="cpu", beta=0.0, loss="mse"):
         if beta < 0:
             raise ValueError("beta must be nonnegative")
@@ -29,16 +32,14 @@ class AE(Compressor):
         return self.rank * (2 if self.beta else 1)
 
     @abstractmethod
-    def build(self):
+    def build_networks(self):
         """Create self.encoder and self.decoder for self.shape."""
 
     def fit(self, dataset, validation=None, logger=None, **kwargs):
         if validation is None:
             raise ValueError(f"{type(self).__name__} requires a validation dataset")
         self.shape = tuple(dataset.field_shape)
-        if len(self.shape) != 3 or dataset.mask is None:
-            raise ValueError(f"{type(self).__name__} requires (field, height, width) images with a mask")
-        self.build()
+        self.build_networks()
         self.to(self.device)
         mask = torch.as_tensor(dataset.mask, device=self.device)
         parameters = list(self.encoder.parameters()) + list(self.decoder.parameters())

@@ -1,9 +1,9 @@
-"""Streaming feature statistics fitted strictly on training snapshots."""
+"""Streaming per-field statistics of training images, over valid pixels only."""
 import numpy as np
 
 
 class FeatureScaler:
-    def __init__(self, mask=None):
+    def __init__(self, mask):
         self.mask = mask
 
     def fit(self, batches):
@@ -12,10 +12,7 @@ class FeatureScaler:
             x = np.asarray(x, dtype=np.float64)
             if not np.isfinite(x).all():
                 raise ValueError("Nonfinite training data")
-            if x.ndim == 4:
-                if self.mask is None:
-                    raise ValueError("Image normalization requires a valid-cell mask")
-                x = x[..., self.mask]
+            x = x[..., self.mask]  # (batch, field, valid pixels)
             n = x.shape[0] * x.shape[2]
             mu = x.mean(axis=(0, 2))
             ss = ((x - mu[None, :, None]) ** 2).sum(axis=(0, 2))
@@ -34,15 +31,11 @@ class FeatureScaler:
         return self
 
     def transform(self, x):
-        shape = (len(self.mean),) + (1,) * (x.ndim - 2)
-        result = (x - self.mean.reshape(shape)) / self.scale.reshape(shape)
-        if self.mask is not None:
-            result[..., ~self.mask] = 0
+        result = (x - self.mean[:, None, None]) / self.scale[:, None, None]
+        result[..., ~self.mask] = 0
         return result
 
     def inverse(self, x):
-        shape = (len(self.mean),) + (1,) * (x.ndim - 2)
-        result = x * self.scale.reshape(shape) + self.mean.reshape(shape)
-        if self.mask is not None:
-            result[..., ~self.mask] = 0
+        result = x * self.scale[:, None, None] + self.mean[:, None, None]
+        result[..., ~self.mask] = 0
         return result

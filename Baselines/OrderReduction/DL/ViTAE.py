@@ -55,6 +55,12 @@ class ViTAE(CAE):
     in both encoder and decoder; feedforward: MLP size inside each layer (default 4 * hidden).
     The convolution keys (channels, kernel_size, stride, padding) are those of CAE."""
     name = "vit_ae"
+    # At least 3 levels: fewer leave thousands of tokens (103 x 52 after one level), too many for attention.
+    hyperparameters_ranges = {**CAE.hyperparameters_ranges,
+                              "levels": {"type": "int", "low": 3, "high": 4},
+                              "hidden": {"type": "categorical", "choices": [32, 64, 128]},
+                              "heads": {"type": "categorical", "choices": [2, 4]},
+                              "layers": {"type": "int", "low": 1, "high": 3}}
 
     def __init__(self, hidden=64, heads=4, layers=2, feedforward=None, **kwargs):
         super().__init__(**kwargs)
@@ -63,7 +69,7 @@ class ViTAE(CAE):
         self.hidden, self.heads, self.layers = hidden, heads, layers
         self.feedforward = feedforward or 4 * hidden
 
-    def build(self):
+    def build_networks(self):
         encoder, decoder, input_shape_chw = self.convolutions()
         attention = dict(hidden=self.hidden, heads=self.heads, layers=self.layers, feedforward=self.feedforward)
         self.encoder = nn.Sequential(*encoder, TokenEncoder(input_shape_chw, self.encoder_outputs, **attention))

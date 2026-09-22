@@ -25,8 +25,6 @@ class ExperimentLogger:
             run_id = id_path.read_text().strip() if resume and id_path.exists() else uuid.uuid4().hex[:8]
             group = config.get("run_name")
             name = f"{group}/seed_{config.get('seed', 42)}" if group else directory.name
-            if "trial" in config:
-                name += f"/trial_{config['trial']:04d}"
             self.run = wandb.init(project=os.getenv("WANDB_PROJECT", wb.get("project", "rom-flamebench")),
                                   entity=os.getenv("WANDB_ENTITY", wb.get("entity", "FireMark")), mode=mode, config=config,
                                   dir=str(directory.resolve()), name=name, group=group, id=run_id,
