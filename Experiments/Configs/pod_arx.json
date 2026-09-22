@@ -9,7 +9,8 @@
   "K_eval": 50,
   "batch_size": 64,
   "workers": 0,
-  "preprocessing_batch_size": 64,
+  "in_memory": true,
+  "preprocessing_batch_size": 256,
   "compressor": {
     "name": "pod",
     "rank": 16,

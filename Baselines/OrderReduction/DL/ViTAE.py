@@ -56,12 +56,12 @@ class ViTAE(CAE):
     The convolution keys (channels, kernel_size, stride, padding) are those of CAE."""
     name = "vit_ae"
     # At least 3 levels: fewer leave over a thousand tokens (50 x 25 after two levels of kernel 3,
-    # stride 2), too many for attention; three levels leave 24 x 12.
+    # stride 2), too many for attention; three levels leave 24 x 12, four leave 11 x 5.
     hyperparameters_ranges = {**CAE.hyperparameters_ranges,
-                              "levels": {"type": "int", "low": 1, "high": 3},
-                              "hidden": {"type": "categorical", "choices": [32, 64, 128]},
+                              "levels": {"type": "int", "low": 3, "high": 4},
+                              "hidden": {"type": "categorical", "choices": [32, 64]},
                               "heads": {"type": "categorical", "choices": [2, 4]},
-                              "layers": {"type": "int", "low": 1, "high": 3}}
+                              "layers": {"type": "int", "low": 1, "high": 2}}
 
     def __init__(self, hidden=64, heads=4, layers=2, feedforward=None, **kwargs):
         super().__init__(**kwargs)

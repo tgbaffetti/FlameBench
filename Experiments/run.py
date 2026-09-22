@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from DataProcessing.metadata import load_metadata
-from DataProcessing.Dataset import ForecasterDataset
+from DataProcessing.Dataset import Dataset, ForecasterDataset
 from Baselines.OrderReduction.Linear.POD import POD
 from Baselines.OrderReduction.DL.AE import AE
 from Baselines.OrderReduction.DL.CAE import CAE
@@ -31,7 +31,7 @@ FORECASTERS = {"arx": ARX, "constant": Constant, "gru": GRU, "lstm": LSTM, "cnn"
 
 
 CONFIG_KEYS = {"metadata", "output", "run_name", "seed", "device", "cpu_threads", "validation_fraction", "blocks",
-               "batch_size", "joint_batch_size", "workers", "dataloader", "preprocessing_batch_size", "K_eval", "trials",
+               "batch_size", "joint_batch_size", "workers", "dataloader", "in_memory", "preprocessing_batch_size", "K_eval", "trials",
                "compressor", "dataset", "forecaster", "logging", "evaluation"}
 
 
@@ -179,6 +179,8 @@ def main():
     seeds.add_argument("--seeds", type=int, nargs="+")
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text())
+    # Read each trajectory into RAM once (about 18 GB for all cases) instead of from the shared disk.
+    Dataset.in_memory = config.get("in_memory", False)
     for key in ("metadata", "device", "output", "run_name"):
         if getattr(args, key) is not None:
             config[key] = getattr(args, key)

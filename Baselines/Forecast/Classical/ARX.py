@@ -7,7 +7,9 @@ class ARX(Model):
     """Ridge autoregression of the increment: x(t+1) = x(t) + W [x(t-Nx..t), phi(t+1-Ni..t+1) - 1, 1].
 
     Fitting the increment makes the ridge penalty shrink toward the constant forecast, not toward
-    zero. Only the last Nx + 1 state rows and Ni + 1 forcing rows enter, so the zero padding of a
+    zero. The penalty of each weight is alpha times the energy of its feature (the diagonal of
+    the Gram matrix), as a ridge on standardized features: alpha is dimensionless, and latent
+    columns of large scale and forcing columns of small scale are penalized alike. Only the last Nx + 1 state rows and Ni + 1 forcing rows enter, so the zero padding of a
     ForecasterDataset sample never becomes a feature.
     """
     name = "arx"
@@ -40,8 +42,8 @@ class ARX(Model):
                 rhs += x.T @ y
         if gram is None:
             raise ValueError("Empty training loader")
-        penalty = np.eye(len(gram)) * self.alpha
-        penalty[-1, -1] = 0
+        penalty = np.diag(np.diag(gram)) * self.alpha
+        penalty[-1, -1] = 0  # The constant is not penalized.
         self.weights = np.linalg.lstsq(gram + penalty, rhs, rcond=None)[0]
         return self
 

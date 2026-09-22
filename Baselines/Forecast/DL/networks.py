@@ -104,8 +104,7 @@ class GRU(DLModel):
     name = "gru"
     layer_class = nn.GRU
     hyperparameters_ranges = {**DLModel.hyperparameters_ranges,
-                              "hiddens": {"type": "categorical", "choices": [[64], [64, 64], [128, 64], [64, 64, 32]]},
-                              "bidirectional": {"type": "categorical", "choices": [False, True]},
+                              "hiddens": {"type": "categorical", "choices": [[16], [32], [64], [32, 32]]},
                               "normalization": {"type": "categorical", "choices": [None, "layer"]}}
 
     def __init__(self, input_size, output_size, Nx=9, Ni=0, hiddens=(64, 64), bidirectional=False,
@@ -131,12 +130,12 @@ class CNN(DLModel):
     maps them to the increment."""
     name = "cnn"
     hyperparameters_ranges = {**DLModel.hyperparameters_ranges,
-                              "channels": {"type": "categorical", "choices": [[32], [32, 32], [64, 32], [32, 32, 32]]},
+                              "channels": {"type": "categorical", "choices": [[16], [32], [16, 16], [32, 32]]},
                               "kernel_size": {"type": "categorical", "choices": [3, 5]},
                               "activation": {"type": "categorical", "choices": ["relu", "gelu", "silu"]},
                               "normalization": {"type": "categorical", "choices": [None, "layer", "batch"]}}
-    # The window must outlast the convolutions: 3 layers of kernel 5 remove 12 rows.
-    dataset_ranges = {"Nx": {"type": "int", "low": 12, "high": 20}}
+    # The window must outlast the convolutions: 2 layers of kernel 5 remove 8 rows.
+    dataset_ranges = {"Nx": {"type": "int", "low": 8, "high": 20}}
 
     def __init__(self, input_size, output_size, Nx=9, Ni=0, channels=(32, 32), kernel_size=3, normalization=None,
                  activation="relu", dropout=0.0, input_normalization=None, **training):
@@ -158,9 +157,9 @@ class Transformer(DLModel):
     ("relu" or "gelu") are those of nn.TransformerEncoderLayer."""
     name = "transformer"
     hyperparameters_ranges = {**DLModel.hyperparameters_ranges,
-                              "hidden": {"type": "categorical", "choices": [32, 64, 128]},
-                              "layers": {"type": "int", "low": 1, "high": 4},
-                              "heads": {"type": "categorical", "choices": [2, 4, 8]},
+                              "hidden": {"type": "categorical", "choices": [16, 32, 64]},
+                              "layers": {"type": "int", "low": 1, "high": 2},
+                              "heads": {"type": "categorical", "choices": [2, 4]},
                               "activation": {"type": "categorical", "choices": ["relu", "gelu"]}}
 
     def __init__(self, input_size, output_size, Nx=9, Ni=0, hidden=64, layers=2, heads=4, feedforward=None,
