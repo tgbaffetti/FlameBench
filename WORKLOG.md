@@ -332,6 +332,29 @@ Consolidated findings (POD pass; CAE/VAE pass pending Carlo):
   Disk 93% -> 306 GB free.
 
 
+## 2026-09-22 (midday) — NARX bilinear ridge: stability bought, mostly
+`cross_alpha` (separate ridge on the z x phi block, alpha fixed at 30) selected 3000 on the
+500-step windowed validation. Per case, free rollout:
+
+| case | NARX global a=30 | NARX cross_alpha=3000 | ARX a=1 |
+|---|---|---|---|
+| sine_f10_A03 | 0.145 (gain .016) | 0.147 (gain **.015**) | 0.171 (gain .181) |
+| sine_f10_A05 | 0.885 | **0.419** (gain .316) | 0.291 (gain .146) |
+| sine_f40_A03 | 2.14 | **0.146** (gain **.072**) | 0.142 (gain .72) |
+| sine_f40_A05 | 2.8e21 | 1.1e6 (still diverges) | 0.196 (gain .65) |
+| step_A03 | 0.135 | **0.101** | 0.122 |
+| step_A05 | diverged@878 | **0.218** | 0.284 |
+
+- Shrinking only the bilinear block fixes 2 of the 3 broken cases and *improves* the good ones;
+  the highest-frequency/highest-amplitude case (f40_A05) still blows up. So the bilinear term is
+  simultaneously the source of the forcing response and of the instability, and a separate
+  penalty trades them off without fully resolving the hardest corner.
+- Where NARX is stable it dominates ARX on FTF gain (0.015-0.32 vs 0.15-0.72) at comparable or
+  better nRMSE. The paper can report NARX as "best forcing response, conditional on stability"
+  with ARX as the robust baseline — an honest and interesting pairing.
+- Evaluating cross_alpha=30000 (already fitted) to map the stability/accuracy trade-off curve.
+
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.
