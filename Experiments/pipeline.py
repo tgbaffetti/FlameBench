@@ -2,7 +2,8 @@
 
 The config gives the data (metadata, validation_fraction, blocks), the device, the batch sizes
 and K_eval, the number of recursive steps of the validation windows. The scaler is fitted once on
-the training frames and never tuned.
+the training frames and never tuned. validation_fraction 0 is the refit after the HPO: all training
+frames are used, nothing is validated, and the validation errors are None.
 """
 from DataProcessing.loading import make_loader
 from DataProcessing.metadata import load_metadata
@@ -22,6 +23,7 @@ class Pipeline:
         self.joint_batch_size = config.get("joint_batch_size", 8)
         self.loader_options = {"num_workers": config.get("workers", 0), **config.get("dataloader", {})}
         self.scaler = None
+        self.refit = self.split["validation_fraction"] == 0
 
     def loader(self, dataset, shuffle=False, batch_size=None):
         return make_loader(dataset, batch_size=batch_size or self.config.get("batch_size", 64), shuffle=shuffle,
@@ -47,31 +49,43 @@ class Pipeline:
     def train_compressor(self, compressor_class, hyperparameters, logger=None):
         """Build and fit a compressor; return it with its validation reconstruction MSE."""
         compressor = compressor_class.build(hyperparameters, device=self.device)
-        validation = self.frames("validation")
+        validation = None if self.refit else self.frames("validation")
         compressor.fit(self.frames("train"), validation=validation, logger=logger, loader_options=self.loader_options)
+        if self.refit:
+            return compressor, None
         return compressor, reconstruction_error(compressor, validation, loader_options=self.loader_options)
 
     def train_forecaster(self, forecaster_class, hyperparameters, dataset_class, dataset_hyperparameters, compressor,
                          logger=None, directory=None, resume=False):
-        """Build and fit a forecaster on the latents of a frozen compressor; return it with its validation error."""
-        training = self.windows(dataset_class, dataset_hyperparameters, "train", compressor)
-        validation = self.windows(dataset_class, dataset_hyperparameters, "validation", compressor, validation=True)
+        """Build and fit a forecaster on the latents of a frozen compressor; return it with its validation error.
+
+        A forecaster that learns nothing (trainable False) gets windows of frames that are never
+        encoded, so a large identity compressor costs no memory.
+        """
+        encoder = compressor if forecaster_class.trainable else None
+        training = self.windows(dataset_class, dataset_hyperparameters, "train", encoder)
+        validation = None if self.refit else self.loader(
+            self.windows(dataset_class, dataset_hyperparameters, "validation", encoder, validation=True))
         # A row holds a latent state and the forcing; the forecaster returns the next latent state.
         forecaster = forecaster_class.build(hyperparameters, input_size=compressor.rank + 1, output_size=compressor.rank,
                                             Nx=training.Nx, Ni=training.Ni, device=self.device)
-        forecaster.fit(self.loader(training, shuffle=isinstance(forecaster, DLModel)), self.loader(validation),
+        forecaster.fit(self.loader(training, shuffle=isinstance(forecaster, DLModel)), validation,
                        logger=logger, directory=directory, resume=resume)
         return forecaster, self.validation_error(forecaster, compressor, dataset_class, dataset_hyperparameters)
 
     def fine_tune(self, forecaster, compressor, dataset_class, dataset_hyperparameters, logger=None):
         """Train a neural forecaster and an autoencoder together on images; return the validation error."""
         training = self.windows(dataset_class, dataset_hyperparameters, "train")
-        validation = self.windows(dataset_class, dataset_hyperparameters, "validation", validation=True)
+        validation = None if self.refit else self.loader(
+            self.windows(dataset_class, dataset_hyperparameters, "validation", validation=True),
+            batch_size=self.joint_batch_size)
         forecaster.fit_joint(compressor, self.loader(training, shuffle=True, batch_size=self.joint_batch_size),
-                             self.loader(validation, batch_size=self.joint_batch_size), logger=logger)
+                             validation, logger=logger)
         return self.validation_error(forecaster, compressor, dataset_class, dataset_hyperparameters)
 
     def validation_error(self, forecaster, compressor, dataset_class, dataset_hyperparameters):
-        """Field MSE of K_eval-step recursive forecasts: the selection objective."""
+        """Field MSE of K_eval-step recursive forecasts: the selection objective (None in a refit)."""
+        if self.refit:
+            return None
         dataset = self.windows(dataset_class, dataset_hyperparameters, "validation", validation=True)
         return validation_error(forecaster, compressor, dataset, self.joint_batch_size, self.loader_options)

@@ -48,10 +48,14 @@ class DLModel(Model):
         self.rollout_weight, self.loss, self.detach_rollout = rollout_weight, loss, detach_rollout
 
     def fit(self, training, validation=None, logger=None, directory=None, resume=False, **kwargs):
-        if validation is None:
-            raise ValueError("Neural training requires held-out validation")
+        """Train with early stopping on validation; best_epochs is the epoch count of the kept weights.
+
+        Without validation (refit on all training data) it trains exactly `epochs` epochs and
+        keeps the last weights.
+        """
         optimizer = self.make_optimizer(self.network.parameters(), self.lr)
         start, best, stale, best_state = 0, float("inf"), 0, None
+        self.best_epochs = 0
         checkpoint = Path(directory) / "last.pt" if directory else None
         if resume:
             if checkpoint is None or not checkpoint.exists():
@@ -60,6 +64,7 @@ class DLModel(Model):
             self.network.load_state_dict(state["network"])
             optimizer.load_state_dict(state["optimizer"])
             start, best, stale, best_state = state["epoch"] + 1, state["best"], state["stale"], state["best_state"]
+            self.best_epochs = state.get("best_epochs", 0)
             torch.set_rng_state(state["torch_rng"].cpu())
             np.random.set_state(state["numpy_rng"])
             random.setstate(state["python_rng"])
@@ -82,29 +87,38 @@ class DLModel(Model):
                 total += loss.item() * len(batch["target"])
                 count += len(batch["target"])
             self.network.eval()
-            val_total = val_count = 0
-            val_steps = 0
-            with torch.no_grad():
-                for batch in validation:
-                    loss, steps = self.rollout_loss(*self.tensors(batch))
-                    val_total += loss.item() * len(batch["target"])
-                    val_steps += steps.cpu() * len(batch["target"])
-                    val_count += len(batch["target"])
-            value = val_total / val_count
-            if not np.isfinite(value):
-                raise FloatingPointError("Nonfinite validation loss")
-            if value < best:
-                best, stale = value, 0
+            if validation is None:
                 best_state = {k: v.detach().cpu().clone() for k, v in self.network.state_dict().items()}
+                self.best_epochs = epoch + 1
+                epochs.set_postfix(train=total / count)
+                if logger:
+                    logger.log({"train/latent_loss": total/count}, epoch)
             else:
-                stale += 1
-            epochs.set_postfix(train=total / count, validation=value)
-            if logger:
-                logger.log({"train/latent_loss": total/count, "validation/latent_loss": value,
-                            **self.step_errors("validation/latent", val_steps / val_count)}, epoch)
+                val_total = val_count = 0
+                val_steps = 0
+                with torch.no_grad():
+                    for batch in validation:
+                        loss, steps = self.rollout_loss(*self.tensors(batch))
+                        val_total += loss.item() * len(batch["target"])
+                        val_steps += steps.cpu() * len(batch["target"])
+                        val_count += len(batch["target"])
+                value = val_total / val_count
+                if not np.isfinite(value):
+                    raise FloatingPointError("Nonfinite validation loss")
+                if value < best:
+                    best, stale = value, 0
+                    best_state = {k: v.detach().cpu().clone() for k, v in self.network.state_dict().items()}
+                    self.best_epochs = epoch + 1
+                else:
+                    stale += 1
+                epochs.set_postfix(train=total / count, validation=value)
+                if logger:
+                    logger.log({"train/latent_loss": total/count, "validation/latent_loss": value,
+                                **self.step_errors("validation/latent", val_steps / val_count)}, epoch)
             if checkpoint:
                 state = {"network": self.network.state_dict(), "optimizer": optimizer.state_dict(),
                          "epoch": epoch, "best": best, "stale": stale, "best_state": best_state,
+                         "best_epochs": self.best_epochs,
                          "torch_rng": torch.get_rng_state(), "numpy_rng": np.random.get_state(),
                          "python_rng": random.getstate(),
                          "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None}
@@ -119,11 +133,13 @@ class DLModel(Model):
         self.network.eval()
         return self
 
-    def fit_joint(self, compressor, training, validation, logger=None):
+    def fit_joint(self, compressor, training, validation=None, logger=None):
         """Train encoder, forecaster and decoder on the rollout loss of the scaled image forecast.
 
         training/validation yield scaled image windows (ForecasterDataset without compressor);
-        runs joint_epochs with learning rate joint_lr.
+        runs joint_epochs with learning rate joint_lr, with early stopping on validation;
+        best_joint_epochs is the epoch count of the kept weights. Without validation (refit) it
+        trains exactly joint_epochs epochs and keeps the last weights.
         A variational encoder contributes its posterior mean; the KL term is not used here.
         """
         modules = (compressor.encoder, self.network, compressor.decoder)
@@ -131,6 +147,7 @@ class DLModel(Model):
         optimizer = self.make_optimizer(parameters, self.joint_lr)
         mask = torch.as_tensor(training.dataset.mask, device=self.device)
         best, stale, best_state = float("inf"), 0, None
+        self.best_joint_epochs = 0
         epochs = tqdm(range(self.joint_epochs), desc=f"{type(self).__name__} joint fit")
         for epoch in epochs:
             for module in modules:
@@ -148,6 +165,12 @@ class DLModel(Model):
                 count += len(batch["target"])
             for module in modules:
                 module.eval()
+            if validation is None:
+                self.best_joint_epochs = epoch + 1  # The last weights are kept.
+                epochs.set_postfix(train=total / count)
+                if logger:
+                    logger.log({"joint/train_field_loss": total/count}, epoch)
+                continue
             val_total = val_count = 0
             val_steps = 0
             with torch.no_grad():
@@ -163,6 +186,7 @@ class DLModel(Model):
                 best, stale = value, 0
                 best_state = [{k: v.detach().cpu().clone() for k, v in module.state_dict().items()}
                               for module in modules]
+                self.best_joint_epochs = epoch + 1
             else:
                 stale += 1
             epochs.set_postfix(train=total / count, validation=value)

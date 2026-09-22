@@ -167,6 +167,53 @@ def test_full_pipeline_and_hpo(metadata,tmp_path):
     assert set(best['forecaster'])=={'name','alpha'} and best['compressor']=={'name':'pod','rank':2,'batch_size':8}
     assert json.loads((run_directory(best)/'config.json').read_text())==best
     assert np.isfinite(results['sine']['mean_nrmse'])
+    # hpo then refits the best config on all training data (seed 42) and tests it.
+    refitted=json.loads((tmp_path/'hpo'/'pod_arx_test_refit'/'seed_42'/'config.json').read_text())
+    assert refitted['validation_fraction']==0 and refitted['stage']=='refit'
+    assert (tmp_path/'hpo'/'pod_arx_test_refit'/'seed_42'/'metrics.json').exists()
+
+
+def test_refit_split_uses_every_frame(metadata):
+    from DataProcessing.Dataset import split_segments
+    assert split_segments(81,'train',0,10)==[(0,81)] and split_segments(81,'validation',0,10)==[]
+    assert len(CompressorDataset(metadata,'train',validation_fraction=0))==2*81
+    with pytest.raises(ValueError,match='No cases'):
+        CompressorDataset(metadata,'validation',validation_fraction=0)
+
+
+def test_refit_keeps_optimizer_steps(metadata,tmp_path):
+    from Experiments.run import refit, refit_config
+    path=tmp_path/'metadata.json';path.write_text(json.dumps(metadata))
+    cfg={'metadata':str(path),'output':str(tmp_path/'run'),'run_name':'pod_gru','seed':42,**SETTINGS,
+         'compressor':{'name':'pod','rank':2,'batch_size':8},'dataset':{'Nx':2,'Ni':1,'horizon':2},
+         'forecaster':{'name':'gru','hiddens':[4],'epochs':6,'patience':6}}
+    fit(cfg)
+    fitted=json.loads((run_directory(cfg)/'summary.json').read_text())
+    best=fitted['best_epochs']['forecaster']
+    assert 1<=best<=6 and fitted['train_frames']==len(CompressorDataset(metadata,'train',validation_fraction=0.2,blocks=10))
+    refitted=refit_config(cfg)
+    assert refitted['forecaster']['epochs']==max(1,round(best*fitted['train_frames']/(2*81)))
+    assert refitted['run_name']=='pod_gru_refit' and cfg['forecaster']['epochs']==6
+    refit(cfg,[0,1])
+    for seed in (0,1):
+        directory=tmp_path/'run'/'pod_gru_refit'/f'seed_{seed}'
+        assert json.loads((directory/'summary.json').read_text())['validation_field_mse'] is None
+        summary=[json.loads(line) for line in (directory/'metrics.jsonl').read_text().splitlines() if 'summary' in line]
+        assert np.isfinite(summary[-1]['summary']['summary/test_nrmse'])
+
+
+def test_constant_baseline_repeats_initial_field(metadata,tmp_path):
+    path=tmp_path/'metadata.json';path.write_text(json.dumps(metadata))
+    cfg={'metadata':str(path),'output':str(tmp_path/'run'),'run_name':'constant','seed':42,**SETTINGS,
+         'compressor':{'name':'identity'},'dataset':{'Nx':0,'Ni':0,'horizon':1},'forecaster':{'name':'constant'},
+         'evaluation':{'heat_release':True}}
+    assert np.isfinite(fit(cfg))
+    result=run_test(cfg)['sine']
+    # The prediction is the steady first frame, so the heat release error equals that of repeating it.
+    frames=np.load(metadata['cases'][2]['data'])
+    rows,columns=GRID.rows,GRID.columns
+    q=frames[:,1][...,rows,columns]@np.array([1.,2.,3.,4.])
+    assert result['heat_release_relative_l2']==pytest.approx(np.linalg.norm(q[1:]-q[0])/np.linalg.norm(q[1:]),rel=1e-5)
 
 
 def test_physical_metadata_required(metadata,tmp_path):

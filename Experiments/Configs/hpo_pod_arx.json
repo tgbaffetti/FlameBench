@@ -2,24 +2,17 @@
   "metadata": "Data/metadata.json",
   "output": "Experiments/Results",
   "seed": 42,
-  "device": "cpu",
+  "device": "cuda",
   "cpu_threads": 4,
-  "validation_fraction": 0.2,
+  "validation_fraction": 0.3,
   "blocks": 20,
-  "K_eval": 50,
+  "K_eval": 150,
   "trials": 30,
   "batch_size": 64,
+  "joint_batch_size": 8,
   "workers": 0,
   "in_memory": true,
   "preprocessing_batch_size": 256,
-  "compressor": {
-    "name": "pod",
-    "rank": 16
-  },
-  "dataset": {},
-  "forecaster": {
-    "name": "arx"
-  },
   "logging": {
     "wandb": {
       "mode": "offline",
@@ -32,5 +25,12 @@
     "initialization": "steady",
     "gain_phase_start": 0.5,
     "save_predictions": false
+  },
+  "compressor": {
+    "name": "pod"
+  },
+  "dataset": {},
+  "forecaster": {
+    "name": "arx"
   }
 }

@@ -13,6 +13,7 @@ class Model(ABC):
     name = "abstract"
     hyperparameters_ranges = {}
     dataset_ranges = {}
+    trainable = True  # False: fit learns nothing from data, so training windows are not encoded.
 
     @classmethod
     def build(cls, hyperparameters, **context):

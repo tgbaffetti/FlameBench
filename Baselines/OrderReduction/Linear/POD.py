@@ -1,4 +1,5 @@
 """Centered randomized POD using the legacy PODReducer algorithm."""
+import copy
 import numpy as np
 import torch
 from sklearn.utils.extmath import randomized_svd
@@ -17,6 +18,7 @@ class POD(Compressor):
     bases can differ. Both backends store a NumPy basis and encode/decode on CPU.
     """
     name = "pod"
+    rank_range = {"type": "int", "low": 8, "high": 128, "log": True}
 
     def __init__(self, rank=16, batch_size=64, device=None, backend="sklearn"):
         if rank < 1 or batch_size < 1:
@@ -62,6 +64,21 @@ class POD(Compressor):
         # float32 basis: per-step decoding in test rollouts runs in single precision.
         self.mean, self.U_r = self.mean.astype(np.float32), self.U_r.astype(np.float32)
         return self
+
+    def truncated(self, rank):
+        """A POD of smaller rank, made from this one without refitting.
+
+        The columns of U_r are the POD modes: spatial patterns sorted by how much of the
+        training data's variance each explains (singular_values, largest first). A rank-r POD
+        keeps the r most energetic modes, so it is the first r columns of a larger POD's U_r
+        (up to the small randomness of the randomized SVD). The copy keeps those columns;
+        encode then returns r values per frame. This object is unchanged.
+        """
+        if not 1 <= rank <= self.rank:
+            raise ValueError(f"Truncation rank {rank} outside 1..{self.rank}")
+        pod = copy.copy(self)
+        pod.rank, pod.U_r, pod.singular_values = rank, self.U_r[:, :rank], self.singular_values[:rank]
+        return pod
 
     def encode(self, frames):
         return ((self.vectors(frames) - self.mean.T) @ self.U_r).astype(np.float32)

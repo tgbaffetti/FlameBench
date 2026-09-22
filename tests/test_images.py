@@ -269,3 +269,67 @@ def test_forecaster_optimizer():
     assert isinstance(optimizer, torch.optim.SGD) and optimizer.defaults['weight_decay'] == 0.1
     with pytest.raises(ValueError, match='optimizer'):
         GRU(input_size=3, output_size=2, optimizer='rmsprop')
+
+
+def test_pod_truncated_keeps_leading_modes(tmp_path):
+    from DataProcessing.metadata import load_metadata
+    metadata = load_metadata(image_metadata(tmp_path))
+    frames = CompressorDataset(metadata, 'train', validation_fraction=0.5, blocks=2)
+    pod = POD(rank=4).fit(frames)
+    small = pod.truncated(2)
+    x = np.stack([frames[i].numpy() for i in range(3)])
+    np.testing.assert_allclose(small.encode(x), pod.encode(x)[:, :2], rtol=1e-5)
+    assert pod.rank == 4 and small.rank == 2
+    with pytest.raises(ValueError):
+        pod.truncated(5)
+
+
+def test_hpo_tunes_pod_rank_and_skips_infeasible(tmp_path):
+    from Experiments.HPO import optimize
+    from Baselines.Forecast.DL.networks import CNN
+    config = hpo_config(tmp_path)
+    # Segments of 8 frames and K_eval 3 allow max(Nx, Ni) <= 4; two kernel-3 convolutions need
+    # max(Nx, Ni) >= 4. Most sampled (Nx, Ni) are infeasible and must be skipped, not crash.
+    config['compressor'], config['dataset'] = {}, {'horizon': 1}
+    config['forecaster'] = {'channels': [2, 2], 'kernel_size': 3, 'epochs': 1, 'patience': 5}
+    best = optimize(config, POD, CNN)
+    assert 1 <= best['compressor']['rank'] <= 6  # 2 fields x 3 cells
+    assert max(best['dataset']['Nx'], best['dataset']['Ni']) == 4
+
+
+def test_summarize_groups_sine_frequencies():
+    from Experiments.evaluation import summarize
+    cases = [dict(name='a', waveform='sine', frequency_hz=10), dict(name='b', waveform='sine', frequency_hz=40),
+             dict(name='c', waveform='step', frequency_hz=None)]
+    results = {'a': dict(mean_nrmse=0.1, mean_ssim=0.9, heat_release_relative_l2=0.2, seconds_per_step=1.0,
+                         gain_phase=dict(relative_gain_error=0.1, phase_error_deg=-5.0)),
+               'b': dict(mean_nrmse=0.3, mean_ssim=0.7, heat_release_relative_l2=0.4, seconds_per_step=1.0,
+                         gain_phase=dict(relative_gain_error=0.5, phase_error_deg=20.0)),
+               'c': dict(mean_nrmse=0.2, mean_ssim=0.8, seconds_per_step=1.0)}
+    summary = summarize(results, cases, validation_field_mse=0.01)
+    assert summary['summary/test_nrmse'] == pytest.approx(0.2)
+    assert summary['summary/test_nrmse_worst'] == 0.3
+    assert summary['summary/heat_release_l2'] == pytest.approx(0.3)
+    assert summary['summary/phase_error_10hz'] == 5.0 and summary['summary/gain_error_40hz'] == 0.5
+    assert summary['summary/val_field_mse'] == 0.01
+
+
+@pytest.mark.parametrize('cls', [CAE, ViTAE])
+def test_autoencoder_reconstructs_constant_pixels_exactly(tmp_path, cls):
+    # A field that never varies in training (std 0) must come back exactly, as with POD: decoder
+    # noise there, times large cell volumes, used to dominate the integrated heat release.
+    from DataProcessing.metadata import load_metadata
+    metadata = load_metadata(image_metadata(tmp_path))
+    for case in metadata['cases']:
+        frames = np.load(case['data'])
+        frames[:, 1][:, frames[0, 1] != 0] = 5.0
+        np.save(case['data'], frames)
+    raw = CompressorDataset(metadata, 'train', validation_fraction=0.5, blocks=2)
+    scaler = FeatureScaler(raw.mask).fit(DataLoader(raw, batch_size=4))
+    split = dict(validation_fraction=0.5, blocks=2, scaler=scaler)
+    extra = dict(hidden=4, heads=1, layers=1) if cls is ViTAE else {}
+    compressor = cls(rank=1, channels=(2,), padding=1, epochs=1, batch_size=4, **extra).fit(
+        CompressorDataset(metadata, 'train', **split), validation=CompressorDataset(metadata, 'validation', **split))
+    x = np.stack([f.numpy() for f in CompressorDataset(metadata, 'test', **split)])
+    reconstructed = compressor.decode(compressor.encode(x))
+    np.testing.assert_array_equal(reconstructed[:, 1][:, raw.mask], x[:, 1][:, raw.mask])

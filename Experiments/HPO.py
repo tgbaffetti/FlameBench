@@ -4,9 +4,14 @@ The search spaces are the hyperparameters_ranges of the given classes. Every val
 the config sections compressor, dataset and forecaster is fixed; the other range entries are
 tuned. A forecaster's dataset_ranges overrides the ForecasterDataset ranges (ARX fixes horizon 1).
 The search runs in up to three stages, each keeping the best result of the stage before:
-  1. compressor: validation reconstruction MSE (skipped when a trained compressor is given);
-  2. forecaster and dataset (Nx, Ni, horizon), compressor frozen: validation field MSE of
-     K_eval-step recursive forecasts;
+  1. compressor: validation reconstruction MSE (skipped when a trained compressor is given).
+     Reconstruction always improves with rank, so the rank is not chosen here: a compressor with
+     a rank_range (POD) and no rank in the config is fitted once at the largest rank of the range;
+  2. forecaster, dataset (Nx, Ni, horizon) and, for such a compressor, the rank, compressor
+     frozen: validation field MSE of K_eval-step recursive forecasts. Each trial keeps the first
+     `rank` POD modes of the stage-1 fit (see POD.truncated). Trials whose values cannot work
+     together (a window longer than a data segment, a CNN needing more rows than Nx or Ni give)
+     are skipped before training and do not count toward the trials;
   3. the forecaster's joint_* keys, training autoencoder and neural forecaster together: same
      objective. It runs for an autoencoder trained in stage 1, or a given one when
      fine_tune_compressor is true.
@@ -41,7 +46,7 @@ def sample(trial, ranges, fixed, prefix):
         elif spec["type"] == "categorical":
             values[key] = trial.suggest_categorical(name, spec["choices"])
         elif spec["type"] == "int":
-            values[key] = trial.suggest_int(name, spec["low"], spec["high"])
+            values[key] = trial.suggest_int(name, spec["low"], spec["high"], log=spec.get("log", False))
         else:
             values[key] = trial.suggest_float(name, spec["low"], spec["high"], log=spec.get("log", False))
     return values
@@ -52,7 +57,12 @@ def tunable(ranges, fixed):
 
 
 def minimize(train, trials, seed):
-    """Run train(trial) -> (values, fitted objects, error) trials times; return the best (values, fitted)."""
+    """Run train(trial) -> (values, fitted objects, error) until `trials` trials complete; return the best (values, fitted).
+
+    A trial whose sampled values cannot work together raises optuna.TrialPruned before training
+    (see check_feasible). It costs no training and does not count toward `trials`; at most
+    10 * trials are sampled in total, so a search space that is almost all infeasible still ends.
+    """
     best = {"error": float("inf")}
 
     def objective(trial):
@@ -65,10 +75,29 @@ def minimize(train, trials, seed):
         return error
 
     study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed))
-    study.optimize(objective, n_trials=trials, catch=(FloatingPointError,), show_progress_bar=False)  # Optuna logs each finished trial; a nested bar breaks the inner bars in notebooks.
+    enough = optuna.study.MaxTrialsCallback(trials, states=(optuna.trial.TrialState.COMPLETE,))
+    study.optimize(objective, n_trials=10 * trials, catch=(FloatingPointError,), callbacks=[enough],
+                   show_progress_bar=False)  # Optuna logs each finished trial; a nested bar breaks the inner bars in notebooks.
     if "values" not in best:
-        raise RuntimeError("Every trial diverged")
+        raise RuntimeError("Every trial diverged or was infeasible")
     return best["values"], best["fitted"]
+
+
+def check_feasible(pipeline, forecaster_class, dataset_class, dataset_values, values, rank):
+    """Raise optuna.TrialPruned when the sampled values cannot be trained together.
+
+    Builds, without encoding any frames, the training and validation windows (they fail when a
+    window, max(Nx, Ni) + 1 rows plus the horizon, is longer than a data segment) and the
+    forecaster (it fails, for example, when a CNN's convolutions need more rows than
+    max(Nx, Ni) + 1). Both raise ValueError, which is turned into a pruned trial.
+    """
+    try:
+        windows = pipeline.windows(dataset_class, dataset_values, "train")
+        pipeline.windows(dataset_class, dataset_values, "validation", validation=True)
+        forecaster_class.build(values, input_size=rank + 1, output_size=rank, Nx=windows.Nx, Ni=windows.Ni,
+                               device="cpu")
+    except ValueError as error:
+        raise optuna.TrialPruned(f"Infeasible values: {error}") from error
 
 
 def optimize(config, compressor_class=None, forecaster_class=None, dataset_class=ForecasterDataset,
@@ -87,11 +116,16 @@ def optimize(config, compressor_class=None, forecaster_class=None, dataset_class
     fixed = {key: {k: v for k, v in config.get(key, {}).items() if k != "name"}
              for key in ("compressor", "dataset", "forecaster")}
     result = {}
+    # Rank tuned in stage 2 (see Compressor.rank_range): fit once at the largest rank in stage 1.
+    rank_range = compressor_class.rank_range if compressor is None else None
+    tune_rank = rank_range is not None and "rank" not in fixed["compressor"]
     if compressor is None:
         ranges = compressor_class.hyperparameters_ranges
 
         def train(trial):
             values = sample(trial, ranges, fixed["compressor"], "compressor.")
+            if tune_rank:
+                values["rank"] = rank_range["high"]
             return (values, *pipeline.train_compressor(compressor_class, values))
 
         values, compressor = minimize(train, trials if tunable(ranges, fixed["compressor"]) else 1, seed)
@@ -102,15 +136,23 @@ def optimize(config, compressor_class=None, forecaster_class=None, dataset_class
 
     dataset_ranges = {**dataset_class.hyperparameters_ranges, **forecaster_class.dataset_ranges}
     ranges = {k: v for k, v in forecaster_class.hyperparameters_ranges.items() if not k.startswith("joint_")}
+    if tune_rank:  # POD caps the rank at the data size, so the fit may hold fewer modes than asked.
+        high = min(rank_range["high"], compressor.rank)
+        rank_range = {**rank_range, "low": min(rank_range["low"], high), "high": high}
 
     def train(trial):
+        rank = sample(trial, {"rank": rank_range}, {}, "compressor.")["rank"] if tune_rank else compressor.rank
         dataset_values = sample(trial, dataset_ranges, fixed["dataset"], "dataset.")
         values = sample(trial, ranges, fixed["forecaster"], "forecaster.")
-        forecaster, error = pipeline.train_forecaster(forecaster_class, values, dataset_class, dataset_values, compressor)
-        return (dataset_values, values), forecaster, error
+        check_feasible(pipeline, forecaster_class, dataset_class, dataset_values, values, rank)
+        codec = compressor.truncated(rank) if tune_rank else compressor
+        forecaster, error = pipeline.train_forecaster(forecaster_class, values, dataset_class, dataset_values, codec)
+        return (rank, dataset_values, values), (forecaster, codec), error
 
-    tuned = tunable(dataset_ranges, fixed["dataset"]) or tunable(ranges, fixed["forecaster"])
-    (dataset_values, values), forecaster = minimize(train, trials if tuned else 1, seed)
+    tuned = tune_rank or tunable(dataset_ranges, fixed["dataset"]) or tunable(ranges, fixed["forecaster"])
+    (rank, dataset_values, values), (forecaster, compressor) = minimize(train, trials if tuned else 1, seed)
+    if tune_rank:
+        result["compressor"]["rank"] = rank
     result["dataset"] = dataset_values
     result["forecaster"] = {"name": forecaster_class.name, **values}
 

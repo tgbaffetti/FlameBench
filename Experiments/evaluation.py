@@ -65,6 +65,36 @@ def validation_error(forecaster, compressor, dataset, batch_size=16, loader_opti
     return sse / count
 
 
+def summarize(results, cases, validation_field_mse=None):
+    """The few numbers that rank runs, from the per-case test results of evaluate.
+
+    test_nrmse and test_ssim average mean_nrmse and mean_ssim over the test cases; test_nrmse_worst
+    is the worst case. heat_release_l2 averages the relative L2 error of integrated Q. Sine
+    cases are grouped by forcing frequency: gain_error_<f>hz averages the relative gain error and
+    phase_error_<f>hz the absolute phase error in degrees, because models can be right at one
+    frequency and wrong at another. Missing values (e.g. heat release disabled) are skipped.
+    """
+    def mean(values):
+        values = [v for v in values if v is not None]
+        return float(np.mean(values)) if values else None
+
+    nrmse = [r["mean_nrmse"] for r in results.values() if r.get("mean_nrmse") is not None]
+    summary = {"summary/val_field_mse": validation_field_mse,
+               "summary/test_nrmse": mean(nrmse),
+               "summary/test_nrmse_worst": max(nrmse) if nrmse else None,
+               "summary/test_ssim": mean(r.get("mean_ssim") for r in results.values()),
+               "summary/heat_release_l2": mean(r.get("heat_release_relative_l2") for r in results.values()),
+               "summary/seconds_per_step": mean(r.get("seconds_per_step") for r in results.values())}
+    frequencies = {case["name"]: case["frequency_hz"] for case in cases if case.get("waveform") == "sine"}
+    for frequency in sorted(set(frequencies.values())):
+        gain_phase = [results[name].get("gain_phase", {}) for name, f in frequencies.items()
+                      if f == frequency and name in results]
+        phase = [g.get("phase_error_deg") for g in gain_phase]
+        summary[f"summary/gain_error_{frequency:g}hz"] = mean(g.get("relative_gain_error") for g in gain_phase)
+        summary[f"summary/phase_error_{frequency:g}hz"] = mean(abs(p) for p in phase if p is not None)
+    return summary
+
+
 def synchronize(model):
     device = getattr(model, "device", None)
     if device is not None and torch.device(device).type == "cuda":

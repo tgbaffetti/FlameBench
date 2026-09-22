@@ -134,8 +134,6 @@ class CNN(DLModel):
                               "kernel_size": {"type": "categorical", "choices": [3, 5]},
                               "activation": {"type": "categorical", "choices": ["relu", "gelu", "silu"]},
                               "normalization": {"type": "categorical", "choices": [None, "layer", "batch"]}}
-    # The window must outlast the convolutions: 2 layers of kernel 5 remove 8 rows.
-    dataset_ranges = {"Nx": {"type": "int", "low": 8, "high": 20}}
 
     def __init__(self, input_size, output_size, Nx=9, Ni=0, channels=(32, 32), kernel_size=3, normalization=None,
                  activation="relu", dropout=0.0, input_normalization=None, **training):

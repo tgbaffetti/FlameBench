@@ -273,8 +273,31 @@ python -m Experiments.run test --config Experiments/Configs/pod_gru.json \
 python -m Experiments.run fit --config Experiments/Configs/pod_gru.json \
   --run-name pod_gru_20260920T120000Z --seed 1 --resume
 
-python -m Experiments.run hpo --config Experiments/Configs/pod_arx.json --trials 20
+# Tune (config seed), fit and test the best config, then refit it on all training data
+# with seeds 0 1 2 and test each refit.
+python -m Experiments.run hpo --config Experiments/Configs/hpo_pod_arx.json --seeds 0 1 2
+# Refit alone, from a fitted config.
+python -m Experiments.run refit --config Experiments/Results/<run_name>/seed_42/config.json --seeds 0 1 2
 tensorboard --logdir Experiments/Results
+```
+
+`hpo` writes two experiments: `<run_name>` (the best config fitted on the
+training/validation split, W&B config `stage: fit`) and `<run_name>_refit` (fitted on
+every training frame, `stage: refit`, one folder per seed). A refit has no validation
+data, so nothing stops training early: each neural stage trains for the same number of
+optimizer steps as the fit kept, i.e. the fit's best epoch count times
+train frames / all training frames. Every test also writes `summary/*` values to the W&B
+run summary (mean and worst test NRMSE, SSIM, heat-release error, gain and phase error
+per forcing frequency, validation MSE): a bar chart of `summary/test_nrmse` ranks all
+runs.
+
+Full benchmark on a GPU server (run inside `screen`): every compressor-forecaster pair
+(`hpo_<compressor>_<forecaster>.json`, the same 30-trial budget each) plus the constant
+baseline (`identity_constant.json`), spread over the GPUs, one log per pair in `logs/`:
+
+```bash
+PYTHON=.venv/bin/python Experiments/scripts/hpo.sh              # everything
+GPUS="0 1" Experiments/scripts/hpo.sh pod_arx pod_gru constant  # a subset on GPUs 0 and 1
 ```
 
 You can also pass a saved `seed_N/config.json` to `--config`; it already contains

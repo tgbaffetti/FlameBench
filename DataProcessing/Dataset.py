@@ -3,7 +3,8 @@
 Partitions: "train" and "validation" come from the training cases, "test" from the test cases.
 Each training trajectory is cut in time into `blocks` equal blocks. round(blocks *
 validation_fraction) evenly spaced blocks are validation and the others are training, so both
-partitions cover the whole forcing history (for example every frequency of a sweep). Each run of
+partitions cover the whole forcing history (for example every frequency of a sweep). With
+validation_fraction 0 (refit after the HPO) the whole trajectory is training. Each run of
 consecutive blocks is one segment. Samples never cross a segment edge, so no frame is used by both
 partitions, and the compressor and the forecaster see exactly the same frames.
 
@@ -18,7 +19,12 @@ from torch.utils.data import Dataset as TorchDataset
 
 
 def split_segments(length, partition, validation_fraction, blocks):
-    """(start, stop) frame ranges of one training trajectory that belong to the partition."""
+    """(start, stop) frame ranges of one training trajectory that belong to the partition.
+
+    validation_fraction 0 is the refit split: the whole trajectory is training, nothing is validation.
+    """
+    if validation_fraction == 0:
+        return [(0, length)] if partition == "train" else []
     count = round(blocks * validation_fraction)
     if not 0 < count < blocks:
         raise ValueError("validation_fraction must select at least one block and leave one for training")
@@ -147,9 +153,9 @@ class ForecasterDataset(Dataset):
     are frames (joint training). stride > 1 keeps every stride-th window only, e.g. stride = K
     gives back-to-back rollouts that compare each frame once (validation).
     """
-    hyperparameters_ranges = {"Nx": {"type": "int", "low": 0, "high": 5},
-                              "Ni": {"type": "int", "low": 0, "high": 5},
-                              "horizon": {"type": "categorical", "choices": [1, 5, 10, 20]}}
+    hyperparameters_ranges = {"Nx": {"type": "int", "low": 0, "high": 10},
+                              "Ni": {"type": "int", "low": 0, "high": 10},
+                              "horizon": {"type": "categorical", "choices": [1, 5, 10, 20, 50]}}
 
     def __init__(self, metadata, partition, Nx=9, Ni=0, horizon=1, validation_fraction=0.2, blocks=20,
                  scaler=None, compressor=None, stride=1, batch_size=64):

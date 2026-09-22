@@ -52,8 +52,10 @@ class ARX(Model):
 
 
 class Constant(Model):
+    """Repeats the last state: with the identity compressor, the initial field forever."""
     name = "constant"
     dataset_ranges = {"horizon": 1}
+    trainable = False
 
     def __init__(self, input_size=None, output_size=None, Nx=9, Ni=0, device="cpu"):
         self.Nx, self.Ni = Nx, Ni

@@ -1,4 +1,7 @@
-"""TensorBoard, JSONL and W&B share exactly the same scalar metrics."""
+"""TensorBoard, JSONL and W&B share exactly the same scalar metrics.
+
+log() records curves (one value per step); summary() records the few final numbers that rank runs.
+"""
 import json
 import os
 import uuid
@@ -39,6 +42,18 @@ class ExperimentLogger:
         self.file.flush()
         if self.run:
             self.run.log({"epoch": step, **values})
+
+    def summary(self, values):
+        """One final value per metric: W&B run summary (a column of the runs table, so bar charts
+        and parallel coordinates compare runs), plus a {"summary": ...} JSONL line and TensorBoard
+        scalars at step 0."""
+        for name, value in values.items():
+            if value is not None:
+                self.writer.add_scalar(name, value, 0)
+        self.file.write(json.dumps({"summary": values}, allow_nan=False) + "\n")
+        self.file.flush()
+        if self.run:
+            self.run.summary.update(values)
 
     def close(self):
         self.writer.close()
