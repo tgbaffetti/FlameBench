@@ -1,0 +1,41 @@
+{
+  "metadata": "Data/metadata.json",
+  "output": "Experiments/Results",
+  "seed": 42,
+  "device": "cuda",
+  "cpu_threads": 4,
+  "validation_fraction": 0.3,
+  "blocks": 20,
+  "K_eval": 150,
+  "trials": 30,
+  "batch_size": 64,
+  "joint_batch_size": 8,
+  "workers": 0,
+  "in_memory": true,
+  "preprocessing_batch_size": 256,
+  "logging": {
+    "wandb": {
+      "mode": "offline",
+      "project": "rom-flamebench",
+      "entity": "FireMark"
+    }
+  },
+  "evaluation": {
+    "heat_release": true,
+    "initialization": "steady",
+    "gain_phase_start": 0.5,
+    "save_predictions": false
+  },
+  "compressor": {
+    "name": "cae",
+    "rank": 16,
+    "epochs": 20
+  },
+  "dataset": {},
+  "forecaster": {
+    "name": "cnn",
+    "epochs": 100,
+    "patience": 20,
+    "input_normalization": "batch"
+  }
+}
