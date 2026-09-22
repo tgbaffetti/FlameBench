@@ -65,8 +65,8 @@ def prepare(metadata_path, source_root, overwrite=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--metadata", default="Data/metadata.json")
-    parser.add_argument("--source", default="Data/Raw")
+    parser.add_argument("--metadata", default="DataProcessing/metadata.json")
+    parser.add_argument("--source", default="data")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
     prepare(args.metadata, args.source, args.overwrite)

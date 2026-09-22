@@ -23,7 +23,7 @@ def qseries(data_path, q_index, volumes, block=256):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--metadata", default="Data/metadata.json")
+    parser.add_argument("--metadata", default="DataProcessing/metadata.json")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
     metadata = load_metadata(args.metadata)
@@ -31,7 +31,7 @@ def main():
         raise ValueError("Set cell_volumes in the metadata first (python -m DataProcessing.grid)")
     volumes = np.load(metadata["cell_volumes"], allow_pickle=False)
     q_index = metadata["fields"].index("mix:Q")
-    out_dir = Path(args.metadata).resolve().parent / "Qseries"
+    out_dir = Path(metadata["data_root"]) / "Qseries"
     out_dir.mkdir(exist_ok=True)
     for case in metadata["cases"]:
         target = out_dir / f"{case['name']}.npy"

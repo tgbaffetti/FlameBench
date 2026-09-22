@@ -1,6 +1,6 @@
 """Derive per-cell quantities from the CFD grid (data/grid.vtu is not in git; ask on Teams).
 
-Writes, next to the metadata file:
+Writes, into the metadata's data_root:
 - cell_volumes.npy: (n_cells,) float64, |cell volume| in m^3 (206 cells have inverted
   orientation in the source grid, hence the absolute value).
 - coordinates.npy: (n_cells, 3) float64 cell centers in m.
@@ -10,12 +10,13 @@ Writes, next to the metadata file:
 - edges.npy: (2, E) int64 directed cell-adjacency (face-sharing neighbors, both directions),
   for graph models (MeshGraphNets).
 
-Run: python -m DataProcessing.grid [--grid data/grid.vtu] [--metadata Data/metadata.json]
+Run: python -m DataProcessing.grid [--grid data/grid.vtu] [--metadata DataProcessing/metadata.json]
 Then reference the files from the metadata ("cell_volumes", "coordinates", "grid_indices").
 """
 import argparse
 from pathlib import Path
 import numpy as np
+from .metadata import load_metadata
 
 DECIMALS = 8
 
@@ -51,9 +52,9 @@ def derive(grid_path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--grid", default="data/grid.vtu")
-    parser.add_argument("--metadata", default="Data/metadata.json")
+    parser.add_argument("--metadata", default="DataProcessing/metadata.json")
     args = parser.parse_args()
-    out = Path(args.metadata).resolve().parent
+    out = Path(load_metadata(args.metadata)["data_root"])
     derived = derive(args.grid)
     np.save(out / "cell_volumes.npy", derived["cell_volumes"])
     np.save(out / "coordinates.npy", derived["coordinates"])

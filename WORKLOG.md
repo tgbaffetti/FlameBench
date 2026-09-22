@@ -398,3 +398,21 @@ Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.
 5. MeshGraphNets + pushforward ablation. 6. CNN/grid track. Then big runs.
+
+## 2026-09-22 — Data moved to shared storage
+
+- Dataset (prepared 17.5G + raw 29.4G) now lives in `/srv/mlg/shared/FlameBench/`
+  (`Data/` and `raw/`), group-readable; `Data` and `data` in each clone are symlinks to it
+  (same CephFS, so the move was a rename — no copy). Both are fully gitignored now.
+- `metadata.json` is tracked at `DataProcessing/metadata.json` with a new optional
+  `"data_root"` key (relative to the metadata file; default `"."` keeps old behavior and
+  the tests' tmp_path metadata untouched). `load_metadata` resolves all case/derived paths
+  against it and exposes the resolved root as `metadata["data_root"]`; `grid.py`/`qprime.py`
+  write there instead of "next to the metadata".
+- A byte-identical compat copy stays at `Data/metadata.json` so configs that reference the
+  old path (including the in-flight DeepONet lr3e-4 seeds run) keep working; new configs
+  should use `DataProcessing/metadata.json`.
+- Caveat: `--resume` of runs started before the move fails the `metadata.resolved.json`
+  check (absolute paths changed). Start such runs fresh.
+- Setup on a new clone (any MLG member in `gs-t2-research-mlg-vms`):
+  `ln -s /srv/mlg/shared/FlameBench/Data Data && ln -s /srv/mlg/shared/FlameBench/raw data`

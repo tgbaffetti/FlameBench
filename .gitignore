@@ -4,13 +4,10 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 *.egg-info/
-data/
+data
 data_raw/*
 train_results/*
-Data/Raw/
-Data/**/*.npy
-Data/**/*.npz
-Data/**/*.tmp
+Data
 Experiments/Results/*
 !Experiments/Results/.gitkeep
 wandb/

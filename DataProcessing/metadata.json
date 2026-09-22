@@ -1,4 +1,5 @@
 {
+  "data_root": "../Data",
   "dt": 0.0005,
   "fields": [
     "p",
