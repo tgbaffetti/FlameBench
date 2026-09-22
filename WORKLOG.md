@@ -229,6 +229,41 @@ full randomized SVD, so POD baselines need a re-run after the merge).
   Operator k-runs are plain (no residual/noise) so the k axis stays clean; epochs 50/patience 10.
 
 
+## 2026-09-22 (morning) — overnight matrix results
+Table below is case sine_f10_A03 (mean nRMSE unless noted); full table via scratchpad collect.py.
+
+| run | k | 1-step | full-AR | q' relL2 | FTF gain err | horizon 1-10\|11-100\|101-1k\|1k+ |
+|---|---|---|---|---|---|---|
+| POD+NARX (a=10) | 1 | -- | **0.136** | **0.0287** | **0.030** | 0.24\|0.06\|0.12\|0.14 |
+| POD+ARX (Nx=9) | 1 | 0.092 | 0.178 | 0.064 | 0.217 | 0.24\|0.10\|0.17\|0.17 |
+| DMDc (Nx=0) | 1 | 0.089 | 0.236 | 0.142 | 0.518 | 0.24\|0.10\|0.23\|0.24 |
+| persistence | 1 | 0.090 | 0.315 | 0.225 | 1.00 | 0.24\|0.15\|0.31\|0.31 |
+| POD+LSTM | 1/2/8/32 | 0.092 | 0.620/0.477/0.388/**0.365** | 0.37/0.28/0.24/0.30 | ~0.92-0.98 | k32: 0.24\|0.16\|0.32\|0.40 |
+| POD+Transformer | 1/2/8/32 | 0.092 | 0.376/0.374/0.391/**0.335** | 0.25/0.31/0.28/0.23 | ~0.76-0.98 | k32: 0.24\|0.13\|0.32\|0.34 |
+| DeepONet | 1/16 | 0.102/0.253 | 0.545/**0.318** | 23.1/**4.38** | 0.33/0.517 | k16: 0.32\|0.18\|0.31\|0.32 |
+| Transolver | 1/4 | **0.018**/0.024 | 1.411/12.78 | 19.2/2291 | 1.2/34 | k4: 0.23\|9.91\|12.9\|12.9 |
+| 0-D MLP / GRU | -- | -- | -- | **0.004/0.008** | **0.002/0.007** | -- |
+
+Findings:
+1. **NARX (control-affine) is the best field model** on this case and the first with a *usable*
+   FTF (gain err 0.03 vs 0.22 ARX, ~0.95 neural). The bilinear z x phi term is what lets a ROM
+   respond to forcing. BUT it diverges on the two A05 (amplitude 0.5) cases and is poor on
+   sine_f40_A05/f10_A05 — validation only sees sweep amplitudes 0.2/0.4, so amplitude
+   extrapolation is unguarded. Wider alpha sweep (30..1000) running.
+2. **k-step training monotonically helps LSTM** (0.620 -> 0.365 AR) and helps DeepONet a lot
+   (0.545 -> 0.318 AR, q' 23 -> 4.4); Transformer is flat/noisy. It does NOT fix FTF gain
+   (~0.95 for all latent models): stability and forcing-response are separate failures.
+3. **Transolver stays broken** under every recipe (now 0-for-5). Best one-step of all models
+   (0.018) and near-worst rollout — the cleanest instance of the one-step/rollout inversion.
+4. POD rank-16 one-step floor (0.092) is identical for persistence/ARX/LSTM/Transformer:
+   at one step the compressor, not the dynamics model, is the bottleneck.
+- Protocol C for closed-form models (ARX/NARX) is read as: select ridge alpha on the 500-step
+  windowed validation rollout. Sweeps running for both.
+- Fixed: bounded divergence gate (rejected NARX a=0.1/1.0 at 1e24/1e14 — the old finiteness
+  check would have kept them); evaluate() and test() now record a diverged case
+  (status/diverged_at_step) and continue instead of aborting the run.
+
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.
