@@ -264,6 +264,48 @@ Findings:
   (status/diverged_at_step) and continue instead of aborting the run.
 
 
+## 2026-09-22 (late morning) — matrix complete (POD pass), consolidated results
+Case sine_f10_A03 unless noted; `--` = protocol not applicable.
+
+| model | k | 1-step | full-AR | q' relL2 | FTF gain err | horizon 1-10\|11-100\|101-1k\|1k+ |
+|---|---|---|---|---|---|---|
+| POD+NARX (a=30) | 1 | 0.092 | **0.145** | **0.021** | **0.016** | 0.24\|0.06\|0.12\|0.15 |
+| POD+ARX (a=1, protocol C) | 1 | 0.092 | 0.171 | 0.054 | 0.181 | 0.24\|0.10\|0.16\|0.17 |
+| POD+ARX (a=1e-4) | 1 | 0.092 | 0.178 | 0.064 | 0.217 | 0.24\|0.10\|0.17\|0.17 |
+| persistence | 1 | 0.090 | 0.315 | 0.225 | 1.00 | 0.24\|0.15\|0.31\|0.31 |
+| POD+LSTM | 1/2/8/32 | 0.092 | 0.620/0.477/0.388/**0.365** | 0.37/0.28/0.24/0.30 | 0.92-0.98 | k32: 0.24\|0.16\|0.32\|0.40 |
+| POD+Transformer | 1/2/8/32 | 0.092 | 0.376/0.374/0.391/**0.335** | 0.25/0.31/0.28/0.23 | 0.76-0.98 | k32: 0.24\|0.13\|0.32\|0.34 |
+| DeepONet | 1/4/16 | 0.102/0.127/0.253 | 0.545/diverged@~500/**0.318** | 23.1/--/4.38 | 0.33/--/0.52 | k16: 0.32\|0.18\|0.31\|0.32 |
+| Transolver | 1/4/16 | **0.018**/0.024/0.038 | 1.411/12.78/**0.519** | 19.2/2291/12.5 | 1.2/34/3.1 | k16: 0.22\|0.08\|0.33\|0.65 |
+| 0-D MLP / GRU | -- | -- | -- | **0.004/0.008** | **0.002/0.007** | -- |
+
+Consolidated findings (POD pass; CAE/VAE pass pending Carlo):
+1. **Only the bilinear term buys forcing response.** NARX gain err 0.016 / phase 3 deg vs ARX
+   0.18, and 0.76-0.98 for every neural latent model (i.e. they replay a mean cycle and ignore
+   phi). This is the benchmark's central diagnostic and it separates methods that nRMSE does not.
+2. **NARX is also the most fragile**: excellent on A03/f10, diverges or degrades on the
+   amplitude-0.5 cases. Validation sees only sweep amplitudes 0.2/0.4, so the instability is
+   invisible to model selection — an honest limitation of the standard protocol. Separate
+   bilinear ridge (`cross_alpha`) implemented; sweep running.
+3. **ARX (a tuned on the 500-step windowed rollout) is the only model good on all six cases**:
+   AR 0.12-0.29, q' 2.7-9.3%, gain err 0.15-0.72, no divergence. The bar to beat.
+4. **Large-k unrolled training is what rescues neural operators, and only at large k**:
+   DeepONet 0.545 (k=1) -> diverges at ~step 500 (k=4) -> 0.318 (k=16); Transolver
+   1.411 -> 12.78 -> 0.519. Non-monotonic in k, so k must be tuned, not assumed.
+5. **One-step accuracy is anti-correlated with rollout quality across families**: Transolver k=1
+   has the best one-step of all (0.018) and near-worst AR (1.411); DeepONet k=16 has the worst
+   one-step of the operators (0.253) and the best operator AR (0.318).
+6. **POD rank-16 one-step floor = 0.092**, identical for persistence/ARX/NARX/LSTM/Transformer:
+   at one step the compressor is the bottleneck, not the dynamics. Motivates the rank ablation
+   and Carlo's Bench1 (compressor comparison) directly from our own numbers.
+7. k selected on the 500-step windowed validation is right for LSTM (k=32) and DeepONet
+   (rejects k=4 at 2.6e61), but **wrong for Transformer** (picks k=8; k=32 is better on test).
+- Running: NARX cross_alpha sweep (CPU); seeds 43/44 for pod_lstm_k32, pod_transformer_k32
+  (GPU0) and identity_deeponet_k16 (GPU1).
+- NB: LSTM/Transformer k=1 windowed-val scores were computed by replaying cached latents after
+  the fact; verify they are comparable with the k>1 runs before putting them in a paper table.
+
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.
