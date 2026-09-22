@@ -459,6 +459,26 @@ with per-step validation logging, joint fine-tuning, `in_memory` loading, and a 
 suite for the image path (12 image tests + 27 benchmark tests; run in progress).
 
 
+## 2026-09-22 (evening) — DeepONet k=16 reproducible at lr 3e-4 (3/3 seeds)
+Seeds 42/43/44 all train at lr=3e-4 (the default 1e-3 diverged in 2/3). Mean +/- sd, full AR:
+
+| case | AR nRMSE | q' rel-L2 | FTF gain err |
+|---|---|---|---|
+| sine_f10_A03 | 0.319 +/- 0.001 | 6.8 +/- 2.7 | 1.5 +/- 0.9 |
+| sine_f40_A03 | **0.195 +/- 0.004** | 6.9 +/- 2.8 | 13 +/- 6 |
+| sine_f40_A05 | 0.267 +/- 0.010 | 6.9 +/- 2.8 | 17 +/- 8 |
+| step_A03 | 0.278 +/- 0.015 | 5.6 +/- 1.5 | -- |
+
+- Field accuracy is now the most seed-stable of any neural model (sd <= 0.02) and on f40_A03 it
+  beats every latent model (0.195 vs Transformer k32 0.240); it is the best neural *field*
+  model in the matrix, reportable with error bars.
+- q' and FTF remain useless (rel-L2 ~7, gain err > 1) with 40% seed spread — the fields-vs-
+  integral decoupling is a property of the model class, not of a lucky seed.
+- Paper reporting: "DeepONet k=16, lr 3e-4; the default lr diverges in 2 of 3 seeds."
+All queued runs are complete. Remaining before the POD pass is closed: Transolver k=16 seeds
+(single-seed so far), then the CAE/VAE pass once the branch integration with Carlo is agreed.
+
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.
