@@ -18,7 +18,7 @@ class CAE(AE):
     hyperparameters_ranges = {**AE.hyperparameters_ranges,
                               "levels": {"type": "int", "low": 1, "high": 4},
                               "base_channels": {"type": "categorical", "choices": [8, 16, 32]},
-                              "kernel_size": {"type": "categorical", "choices": [3, 5]}}
+                              "kernel_size": {"type": "categorical", "choices": [2,3]}}
 
     @classmethod
     def build(cls, hyperparameters, **context):

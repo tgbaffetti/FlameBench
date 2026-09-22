@@ -42,9 +42,7 @@ class ARX(Model):
             raise ValueError("Empty training loader")
         penalty = np.eye(len(gram)) * self.alpha
         penalty[-1, -1] = 0
-        with tqdm(total=1, desc="ARX solve") as progress:
-            self.weights = np.linalg.lstsq(gram + penalty, rhs, rcond=None)[0]
-            progress.update()
+        self.weights = np.linalg.lstsq(gram + penalty, rhs, rcond=None)[0]
         return self
 
     def predict(self, states, forcing):

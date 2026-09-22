@@ -8,7 +8,10 @@ network shows each layer in order.
 
 GRU, LSTM and CNN take a list with one width per layer (hiddens or channels). Each layer is
 followed by normalization (None, "layer" or "batch"), activation (None, "relu", "gelu", "silu"
-or "tanh") and dropout. The optimizer and weight_decay are DLModel keywords.
+or "tanh") and dropout. input_normalization (None, "layer" or "batch") normalizes the input rows
+before the first layer; "batch" standardizes each column (latent mode or forcing) with batch
+statistics, which suits raw POD latents whose modes differ in scale. The optimizer and
+weight_decay are DLModel keywords.
 """
 import torch
 from torch import nn
@@ -106,9 +109,9 @@ class GRU(DLModel):
                               "normalization": {"type": "categorical", "choices": [None, "layer"]}}
 
     def __init__(self, input_size, output_size, Nx=9, Ni=0, hiddens=(64, 64), bidirectional=False,
-                 normalization=None, activation=None, dropout=0.0, **training):
+                 normalization=None, activation=None, dropout=0.0, input_normalization=None, **training):
         directions = 2 if bidirectional else 1
-        layers, size = [], input_size
+        layers, size = [Normalization(input_normalization, input_size)], input_size
         for hidden in hiddens:
             recurrent = Recurrent(self.layer_class, size, hidden, bidirectional)
             size = directions * hidden
@@ -136,12 +139,12 @@ class CNN(DLModel):
     dataset_ranges = {"Nx": {"type": "int", "low": 12, "high": 20}}
 
     def __init__(self, input_size, output_size, Nx=9, Ni=0, channels=(32, 32), kernel_size=3, normalization=None,
-                 activation="relu", dropout=0.0, **training):
+                 activation="relu", dropout=0.0, input_normalization=None, **training):
         rows = max(Nx, Ni) + 1 - len(channels) * (kernel_size - 1)
         if rows < 1:
             raise ValueError(f"A window of {max(Nx, Ni) + 1} rows is too short for {len(channels)} "
                              f"convolutions of kernel_size {kernel_size}; increase Nx or Ni")
-        layers, size = [], input_size
+        layers, size = [Normalization(input_normalization, input_size)], input_size
         for width in channels:
             layers += block(Convolution(size, width, kernel_size), width, normalization, activation, dropout)
             size = width
@@ -161,10 +164,10 @@ class Transformer(DLModel):
                               "activation": {"type": "categorical", "choices": ["relu", "gelu"]}}
 
     def __init__(self, input_size, output_size, Nx=9, Ni=0, hidden=64, layers=2, heads=4, feedforward=None,
-                 activation="gelu", dropout=0.0, **training):
+                 activation="gelu", dropout=0.0, input_normalization=None, **training):
         layer = nn.TransformerEncoderLayer(hidden, heads, feedforward or 4 * hidden, dropout, activation,
                                            batch_first=True)
-        network = Increment(nn.Linear(input_size, hidden), Position(max(Nx, Ni) + 1, hidden),
+        network = Increment(Normalization(input_normalization, input_size), nn.Linear(input_size, hidden), Position(max(Nx, Ni) + 1, hidden),
                             nn.TransformerEncoder(layer, layers, enable_nested_tensor=False), LastRow(),
                             nn.Linear(hidden, output_size))
         super().__init__(network, Nx, Ni, **training)

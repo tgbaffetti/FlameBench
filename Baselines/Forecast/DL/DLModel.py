@@ -71,7 +71,7 @@ class DLModel(Model):
         for epoch in epochs:
             self.network.train()
             total = count = 0
-            for batch in tqdm(training, desc="training", leave=False):
+            for batch in training:
                 optimizer.zero_grad(set_to_none=True)
                 loss, _ = self.rollout_loss(*self.tensors(batch))
                 if not torch.isfinite(loss):
@@ -85,7 +85,7 @@ class DLModel(Model):
             val_total = val_count = 0
             val_steps = 0
             with torch.no_grad():
-                for batch in tqdm(validation, desc="validation", leave=False):
+                for batch in validation:
                     loss, steps = self.rollout_loss(*self.tensors(batch))
                     val_total += loss.item() * len(batch["target"])
                     val_steps += steps.cpu() * len(batch["target"])
@@ -136,7 +136,7 @@ class DLModel(Model):
             for module in modules:
                 module.train()
             total = count = 0
-            for batch in tqdm(training, desc="training", leave=False):
+            for batch in training:
                 loss, _ = self.joint_loss(compressor, batch, mask)
                 if not torch.isfinite(loss):
                     raise FloatingPointError("Nonfinite joint training loss")
@@ -151,7 +151,7 @@ class DLModel(Model):
             val_total = val_count = 0
             val_steps = 0
             with torch.no_grad():
-                for batch in tqdm(validation, desc="validation", leave=False):
+                for batch in validation:
                     loss, steps = self.joint_loss(compressor, batch, mask)
                     val_total += loss.item() * len(batch["target"])
                     val_steps += steps.cpu() * len(batch["target"])

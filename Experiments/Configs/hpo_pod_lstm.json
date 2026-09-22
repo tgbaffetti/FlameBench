@@ -19,7 +19,8 @@
   "forecaster": {
     "name": "lstm",
     "epochs": 100,
-    "patience": 20
+    "patience": 20,
+    "input_normalization": "batch"
   },
   "logging": {
     "wandb": {

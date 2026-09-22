@@ -234,7 +234,7 @@ def test_forecaster_architecture_options(kind):
     from Baselines.Forecast.DL.networks import Recurrent, Transformer, CNN
     from Experiments.run import FORECASTERS
     options = {'gru': dict(hiddens=[8, 6], bidirectional=True, normalization='layer', activation='tanh'),
-               'lstm': dict(hiddens=[8, 6, 4], normalization='batch'),
+               'lstm': dict(hiddens=[8, 6, 4], normalization='batch', input_normalization='batch'),
                'cnn': dict(channels=[8, 6], kernel_size=2, normalization='batch', activation='gelu'),
                'transformer': dict(hidden=8, layers=3, heads=2, feedforward=24, activation='relu')}[kind]
     model = FORECASTERS[kind](input_size=4, output_size=3, Nx=2, Ni=1, dropout=0.1, **options)
@@ -243,17 +243,19 @@ def test_forecaster_architecture_options(kind):
     assert 'Linear' in str(model.network)  # Printing lists every layer.
     assert all(module.p == 0.1 for module in layers if isinstance(module, nn.Dropout))
     if kind == 'gru':
-        assert layers[0].layer.bidirectional and isinstance(layers[1].norm, nn.LayerNorm)
-        assert isinstance(layers[2], nn.Tanh) and head.in_features == 2 * 6
+        assert isinstance(layers[0].norm, nn.Identity)  # No input normalization by default.
+        assert layers[1].layer.bidirectional and isinstance(layers[2].norm, nn.LayerNorm)
+        assert isinstance(layers[3], nn.Tanh) and head.in_features == 2 * 6
     if kind == 'lstm':
         assert [m.layer.hidden_size for m in layers if isinstance(m, Recurrent)] == [8, 6, 4]
-        assert isinstance(layers[0].layer, nn.LSTM) and isinstance(layers[1].norm, nn.BatchNorm1d)
+        assert isinstance(layers[0].norm, nn.BatchNorm1d)  # Input normalization of each column.
+        assert isinstance(layers[1].layer, nn.LSTM) and isinstance(layers[2].norm, nn.BatchNorm1d)
     if kind == 'cnn':
         assert head.in_features == (3 - 2) * 6  # Valid padding: two kernels of 2 remove two rows.
         with pytest.raises(ValueError, match='too short'):
             CNN(input_size=4, output_size=3, Nx=2, channels=[8, 8], kernel_size=3)
     if kind == 'transformer':
-        encoder = layers[2]
+        encoder = layers[3]
         assert encoder.num_layers == 3 and encoder.layers[0].linear1.out_features == 24
         with pytest.raises(AssertionError, match='divisible'):
             Transformer(input_size=4, output_size=3, hidden=10, heads=4)

@@ -147,8 +147,8 @@ class ForecasterDataset(Dataset):
     are frames (joint training). stride > 1 keeps every stride-th window only, e.g. stride = K
     gives back-to-back rollouts that compare each frame once (validation).
     """
-    hyperparameters_ranges = {"Nx": {"type": "int", "low": 0, "high": 20},
-                              "Ni": {"type": "int", "low": 0, "high": 10},
+    hyperparameters_ranges = {"Nx": {"type": "int", "low": 0, "high": 5},
+                              "Ni": {"type": "int", "low": 0, "high": 5},
                               "horizon": {"type": "categorical", "choices": [1, 5, 10, 20]}}
 
     def __init__(self, metadata, partition, Nx=9, Ni=0, horizon=1, validation_fraction=0.2, blocks=20,
@@ -169,9 +169,15 @@ class ForecasterDataset(Dataset):
             self.ends.append(total)
         self.latents = None
         if compressor is not None:
-            self.latents = [np.concatenate([compressor.encode(self.frames(case, begin, min(begin + batch_size, stop)))
-                                            for begin in tqdm(range(start, stop, batch_size), desc=f"Encoding {case['name']}")])
-                            for case, start, stop in self.segments]
+            progress = tqdm(total=sum(stop - start for _, start, stop in self.segments), desc=f"Encoding {partition}")
+            self.latents = []
+            for case, start, stop in self.segments:
+                chunks = []
+                for begin in range(start, stop, batch_size):
+                    chunks.append(compressor.encode(self.frames(case, begin, min(begin + batch_size, stop))))
+                    progress.update(len(chunks[-1]))
+                self.latents.append(np.concatenate(chunks))
+            progress.close()
 
     def states(self, segment, start, stop):
         case, first, _ = self.segments[segment]

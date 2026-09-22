@@ -59,6 +59,8 @@ class POD(Compressor):
                     self.U_r = U[:, :self.rank].cpu().numpy().copy()
                     self.singular_values = S[:self.rank].cpu().numpy().copy()
             progress.update()
+        # float32 basis: per-step decoding in test rollouts runs in single precision.
+        self.mean, self.U_r = self.mean.astype(np.float32), self.U_r.astype(np.float32)
         return self
 
     def encode(self, frames):

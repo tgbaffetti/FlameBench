@@ -50,7 +50,7 @@ class AE(Compressor):
         validation_loader = make_loader(validation, self.batch_size, **(loader_options or {}))
         best, best_state = float("inf"), None
         epochs = tqdm(range(self.epochs), desc=f"{type(self).__name__} fit")
-        for epoch in tqdm(epochs, desc="Epochs"):
+        for epoch in epochs:
             self.encoder.train()
             self.decoder.train()
             total = count = 0

@@ -65,7 +65,7 @@ def minimize(train, trials, seed):
         return error
 
     study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed))
-    study.optimize(objective, n_trials=trials, catch=(FloatingPointError,), show_progress_bar=True)
+    study.optimize(objective, n_trials=trials, catch=(FloatingPointError,), show_progress_bar=False)  # Optuna logs each finished trial; a nested bar breaks the inner bars in notebooks.
     if "values" not in best:
         raise RuntimeError("Every trial diverged")
     return best["values"], best["fitted"]
