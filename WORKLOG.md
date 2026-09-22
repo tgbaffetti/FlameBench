@@ -313,9 +313,9 @@ Consolidated findings (POD pass; CAE/VAE pass pending Carlo):
 | DeepONet | 0.341 | -- | 2.6e61 | -- | **0.109** | -- | k=16 | yes (AR 0.318) |
 | Transolver | 2.01 | -- | 219 | -- | **0.067** | -- | k=16 | yes (AR 0.519) |
 
-  Selection is right in 3 of 4 families and decisively rejects the catastrophic k=4 operator
-  runs; it inverts only for Transformer, where the three k's are within 15% of each other on
-  validation and 15% on test — i.e. it fails where the choice barely matters.
+  Selection decisively rejects the catastrophic k=4 operator runs. The apparent Transformer
+  inversion (picks k=8, k=32 better on test) is NOT significant: the gap is inside the 3-seed
+  spread measured later the same day — see the seed-statistics entry.
 
 
 ## 2026-09-22 (midday) — seed robustness: the k=16 operator result is fragile
@@ -365,6 +365,33 @@ Consolidated findings (POD pass; CAE/VAE pass pending Carlo):
 | 30 (global) | 0.016 | 4.97 | 2.8e21 | 3/6 |
 | 3000 | **0.015** | **0.072** | 1.1e6 | 5/6 |
 | 30000 | 0.089 | 1.418 | 11.0 | 5/6 (f40_A05 tamed, not usable) |
+
+
+## 2026-09-22 (afternoon) — 3-seed statistics for the latent k=32 models
+Both train reliably on seeds 42/43/44 (unlike DeepONet k=16). Mean +/- sd over 3 seeds:
+
+| case | LSTM k32 AR | LSTM q' | LSTM gain err | Transf. k32 AR | Transf. q' | Transf. gain err |
+|---|---|---|---|---|---|---|
+| sine_f10_A03 | 0.387+/-.044 | 0.266+/-.035 | 0.871+/-.15 | **0.320+/-.062** | 0.211+/-.047 | 0.846+/-.23 |
+| sine_f10_A05 | 0.514+/-.036 | 0.367+/-.025 | 0.982+/-.027 | **0.439+/-.042** | 0.313+/-.040 | 0.889+/-.080 |
+| sine_f40_A03 | 0.324+/-.038 | 0.143+/-.079 | 0.898+/-.028 | **0.240+/-.044** | 0.043+/-.011 | 0.832+/-.12 |
+| sine_f40_A05 | 0.396+/-.043 | 0.158+/-.083 | 0.924+/-.009 | **0.286+/-.011** | 0.056+/-.010 | 0.821+/-.15 |
+| step_A03 | 0.377+/-.078 | 0.174+/-.076 | -- | **0.224+/-.10** | 0.173+/-.094 | -- |
+| step_A05 | 0.498+/-.059 | 0.329+/-.067 | -- | **0.371+/-.097** | 0.279+/-.11 | -- |
+
+1. **Transformer k=32 beats LSTM k=32 on every case**, and by more than the seed spread on
+   f40_A03/f40_A05. It is the better latent dynamics model here.
+2. **Seed spread is large: +/-0.04-0.10 on AR and +/-0.08-0.23 on FTF gain err.** Any
+   single-seed difference below ~0.1 nRMSE is noise.
+3. **CORRECTION to the protocol-C claim.** I previously wrote that windowed-validation k
+   selection "picks the wrong k for Transformer" (k=8 at 0.391 vs k=32 at 0.335, single seed).
+   That 0.056 gap is inside the +/-0.062 seed spread, so the claim is not supported: the
+   selection is not demonstrably wrong for any family. Remove it from the paper narrative and
+   from the earlier selection-table commentary.
+4. The "neural latent models ignore the forcing" finding **survives seeding**: gain err stays
+   0.82-0.98 with modest spread for both models, versus 0.015-0.32 for NARX and 0.15-0.72 ARX.
+- Still open: DeepONet k=16 at lr 3e-4 across 3 seeds (running); Transolver k=16 seeds;
+  NARX/ARX are deterministic given the data so seeding is not needed for them.
 
 
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
