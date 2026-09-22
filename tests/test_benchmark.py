@@ -562,3 +562,26 @@ def test_evaluate_records_divergence_and_continues(metadata,tmp_path):
     onestep=evaluate(Amplifier(),TestDataset(metadata,Nx=0,Ni=0),pod,scaler,tmp_path/'eval',
                      heat_release=False,restart_every=1)
     assert onestep['sine']['status']=='completed'
+
+
+class _Amplifier:
+    """Blows up mid-rollout; module level so pickle can round-trip it."""
+    def predict(self,history,forcing):
+        return np.asarray(history[:,-1])*10
+
+
+def test_test_command_tolerates_diverged_case(metadata,tmp_path,monkeypatch):
+    import Experiments.run as run_module
+    path=tmp_path/'metadata.json';path.write_text(json.dumps(metadata))
+    cfg={'metadata':str(path),'output':str(tmp_path/'run'),'run_name':'diverge','seed':42,
+         'Nx':0,'Ni':0,'validation_fraction':0.2,
+         'compressor':{'name':'pod','rank':2,'batch_size':8},'model':{'name':'arx','alpha':1e-6},
+         'logging':{'wandb':{'mode':'disabled'}},'evaluation':{'heat_release':False}}
+    fit(cfg)
+    # A model that blows up mid-rollout must still produce a logged, readable result.
+    import pickle
+    directory=run_directory(cfg)
+    with (directory/'model.pkl').open('wb') as f:
+        pickle.dump(_Amplifier(),f)
+    results=run_test(cfg)
+    assert results['sine']['status']=='diverged'

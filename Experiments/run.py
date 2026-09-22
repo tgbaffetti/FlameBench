@@ -173,10 +173,10 @@ def test(config):
     try:
         results = evaluate(model, dataset, compressor, scaler, directory, **config.get("evaluation", {}))
         for i, (name, result) in enumerate(results.items()):
-            scalars = {f"test/{name}/mean_nrmse": result["mean_nrmse"],
-                       f"test/{name}/heat_release_relative_l2": result.get("heat_release_relative_l2"),
-                       f"test/{name}/seconds_per_step": result["seconds_per_step"]}
-            for field, value in result["field_nrmse"].items():
+            # A diverged case reports only what it accumulated before breaking.
+            scalars = {f"test/{name}/{key}": result.get(key) for key in
+                       ("mean_nrmse", "heat_release_relative_l2", "seconds_per_step", "diverged_at_step")}
+            for field, value in result.get("field_nrmse", {}).items():
                 scalars[f"test/{name}/nrmse/{field}"] = value
             for metric in ("reference_gain", "predicted_gain", "relative_gain_error", "phase_error_deg"):
                 if metric in result.get("gain_phase", {}):
