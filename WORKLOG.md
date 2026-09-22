@@ -220,8 +220,10 @@ his Compressor contract also moved to image inputs — reconcile before merging;
 full randomized SVD, so POD baselines need a re-run after the merge).
 - New: NARX (bilinear/control-affine ridge: linear + squares + state x phi terms, Ni=4);
   `validation_window` (windowed validation rollout = selection objective for k-step models);
-  `max_steps` eval option (unused for now — full horizon = whole test trajectory; NB our
-  prepared tests are 4001 steps / 2.0 s, not the 2k Tommaso mentioned — check with him).
+  `max_steps` eval option (unused — full horizon = whole test trajectory). CORRECTION
+  2026-09-22: test cases are natively 2001 steps (1.0 s at dt 0.5 ms; sweeps are 4001 / 2.0 s),
+  and every rollout in this log has forecast_steps = 2000. Earlier notes saying "4000-step
+  rollouts" or "4001-step tests" were wrong; Tommaso's "2k steps" was right.
 - Carlo does NOT have k-step training on his branch (checked); ours (unroll_steps) is used.
 - Overnight queues (each config: fit -> full-AR test -> one-step test, via
   Experiments/scripts/queue_runner.py): CPU: pod_arx, pod_narx. GPU0: pod_lstm_k{2,8,32},
@@ -409,6 +411,52 @@ symlinks) and made `DataProcessing/metadata.json` canonical with a `data_root` k
   loss) predate the move and remain genuine.
 - Anyone with older result dirs: `--resume` of pre-move runs fails the metadata.resolved.json
   check, and `Data/metadata_cells.json` is the cell metadata inside the shared tree.
+
+
+## 2026-09-22 (evening) — audit of Carlo's branch (origin/carlo @ 0c2f7b5, 13 commits today)
+His branch is now a complete, self-contained **image pipeline**: `prepare` writes
+(time, field, 206, 104) images with a validity mask; compressors (POD/CAE/ViTAE) and forecasters
+(ARX/Constant/GRU/LSTM/CNN/Transformer) all live on images; 3-stage Optuna HPO
+(compressor -> forecaster+dataset(Nx,Ni,horizon) -> joint AE+forecaster fine-tune); SSIM metric;
+q'/FTF via a cell gather. `losses.py` now exists. The shared `Data/Images` (prepared 16:45 by
+the other session with his tool) is frame-aligned with our cell arrays (same shapes, same phi).
+He HAS implemented flexible k-step training: `dataset.horizon` (HPO choices 1/5/10/20),
+`rollout_weight` mixing 1-step and K-step recursive error, `detach_rollout` = pushforward.
+
+Problems, ranked:
+1. **README contradicts the code on the validation split.** README: "first 80% of each sweep is
+   training, final 20% validation ... a declared benchmark choice". Code (`split_segments`,
+   blocks=20): 4 evenly spaced 100-frame blocks (#2, 7, 12, 17) are validation, interleaved so
+   "both partitions cover every frequency". That is a different protocol from the contiguous
+   tail split all our results used, and it must be one thing, documented once.
+2. **Selection window is 50 steps (`K_eval: 50`), not the 500 we agreed.** Configs and HPO
+   objective both use K_eval=50 recursive steps on validation.
+3. **Same finiteness-only divergence gate we already fell through** (`run.fit`:
+   `if not np.isfinite(score)`), and `evaluate` aborts the whole test on the first nonfinite
+   frame (FieldMetrics raises) — no per-case divergence status, no one-step/horizon metrics.
+   We fixed both on `gianmarco`; his branch reintroduces them.
+4. **All neural forecasters are residual-only** (`Increment`: x(t+1) = x(t) + net(...)), no
+   absolute-target option. Our MGN result (residual+noise 3x worse over 2000 steps) says this
+   should be an ablation, not a fixed design choice. ARX is also fitted on the increment with a
+   feature-energy-scaled ridge — sensible, but not numerically comparable to our ARX.
+5. **`grid_indices.npz` schema collision.** His loader needs `mask/rows/columns/volumes/x/z`
+   (rows z-reversed); our `DataProcessing/grid.py` writes `col_idx/row_idx/nx/nz/x_vals/z_vals`
+   to the same filename. The shared file is currently HIS schema (18:40 today). Re-running our
+   `grid.py` would clobber it and break every image run. Ours must write elsewhere or adopt his.
+6. **README stale in two more places**: "cell volumes remain a TODO" (code reads them from
+   grid_indices.npz and the shared file has them); torch pin `==2.8.0` vs requirements `>=2.5`.
+7. **Merge is not clean: 15 conflicts** (ARX, DLModel, evaluation, run, metadata, paths,
+   latent.py modify/delete, tests, 7 configs) — and the conflicts are semantic: his rewrite
+   replaces the flat-cell pipeline that Identity/DeepONet/Transolver/NARX/zerod/unroll/
+   horizon-metrics depend on. Do not merge by hand; the two branches need a designed
+   integration (dual compressor contract: image track vs mesh track), not a textual merge.
+8. Smaller: `persistence` renamed `constant` (our configs break); `hyperparams` renamed
+   `hyperparameters_ranges` + `.build()` (our model classes lack it); HPO `trials` default 2
+   (TPE with 2 trials is random search); nothing on his branch does NARX, the operators, or
+   the 0-D baseline.
+What is good: the increment ARX with scaled ridge, the shared `Pipeline`, K-step rollout loss
+with per-step validation logging, joint fine-tuning, `in_memory` loading, and a real test
+suite for the image path (12 image tests + 27 benchmark tests; run in progress).
 
 
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
