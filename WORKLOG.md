@@ -479,6 +479,22 @@ All queued runs are complete. Remaining before the POD pass is closed: Transolve
 (single-seed so far), then the CAE/VAE pass once the branch integration with Carlo is agreed.
 
 
+## 2026-09-22 (night) — protocol decisions (Gianmarco) + filename fix
+Decisions on the audit items, per Gianmarco:
+1. **Validation split: Carlo's interleaved blocks** (blocks=20, 4 evenly spaced validation
+   blocks, so validation covers every sweep frequency). The contiguous-tail split is retired.
+2. **Selection window: K_eval = 50 recursive steps** (Carlo's), not 500.
+3. Our cell->pixel map now writes **`cell_pixel_map.npz`** (metadata key `cell_pixel_map`);
+   `grid_indices.npz` is exclusively the image pipeline's file (mask/rows/columns/volumes/x/z)
+   and our `DataProcessing/grid.py` can no longer clobber it. Regenerated in shared Data;
+   verified both files coexist with their own schemas. 61 tests green.
+**Consequence of 1+2, stated plainly: every number in this log was produced under the OLD
+protocol (contiguous tail split, 500-step selection). They are development results. The final
+paper table requires re-running the matrix under the adopted protocol once the branches are
+integrated.** The qualitative findings (forcing-response ranking, one-step/rollout inversion,
+stability trade-offs) are protocol-independent in kind, but no number carries over.
+
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.

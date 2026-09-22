@@ -21,7 +21,7 @@ def load_metadata(path):
         names.add(case["name"])
         for key in ("data", "phi"):
             case[key] = str((root / case[key]).resolve())
-    for key in ("cell_volumes", "coordinates", "grid_indices"):
+    for key in ("cell_volumes", "coordinates", "grid_indices", "cell_pixel_map"):
         if result.get(key):
             result[key] = str((root / result[key]).resolve())
     return result

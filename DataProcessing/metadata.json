@@ -137,5 +137,6 @@
       "data": "Test/step_A05.npy",
       "phi": "Test/phi_step_A05.npy"
     }
-  ]
+  ],
+  "cell_pixel_map": "cell_pixel_map.npz"
 }

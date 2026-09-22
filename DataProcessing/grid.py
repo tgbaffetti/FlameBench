@@ -4,14 +4,16 @@ Writes, into the metadata's data_root:
 - cell_volumes.npy: (n_cells,) float64, |cell volume| in m^3 (206 cells have inverted
   orientation in the source grid, hence the absolute value).
 - coordinates.npy: (n_cells, 3) float64 cell centers in m.
-- grid_indices.npz: col_idx/row_idx (n_cells,) int64 mapping cell -> (x, z) pixel, plus
+- cell_pixel_map.npz: col_idx/row_idx (n_cells,) int64 mapping cell -> (x, z) pixel, plus
   nx, nz, x_vals, z_vals. Same rounding-based binning as process4convolution.py; pixels
-  not covered by any cell (the angled side) stay unassigned.
+  not covered by any cell (the angled side) stay unassigned. NB: deliberately NOT named
+  grid_indices.npz — that file belongs to the image pipeline (Carlo's schema:
+  mask/rows/columns/volumes/x/z, rows z-reversed) and must never be overwritten by this tool.
 - edges.npy: (2, E) int64 directed cell-adjacency (face-sharing neighbors, both directions),
   for graph models (MeshGraphNets).
 
 Run: python -m DataProcessing.grid [--grid data/grid.vtu] [--metadata DataProcessing/metadata.json]
-Then reference the files from the metadata ("cell_volumes", "coordinates", "grid_indices").
+Then reference the files from the metadata ("cell_volumes", "coordinates", "cell_pixel_map").
 """
 import argparse
 from pathlib import Path
@@ -59,7 +61,7 @@ def main():
     np.save(out / "cell_volumes.npy", derived["cell_volumes"])
     np.save(out / "coordinates.npy", derived["coordinates"])
     np.save(out / "edges.npy", derived["edges"])
-    np.savez(out / "grid_indices.npz", **derived["grid_indices"])
+    np.savez(out / "cell_pixel_map.npz", **derived["grid_indices"])
     g = derived["grid_indices"]
     print(f"{len(derived['cell_volumes'])} cells -> {out}; image {g['nx']}x{g['nz']}, "
           f"coverage {len(derived['cell_volumes'])/(g['nx']*g['nz']):.1%}, "
