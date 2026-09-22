@@ -318,6 +318,20 @@ Consolidated findings (POD pass; CAE/VAE pass pending Carlo):
   validation and 15% on test — i.e. it fails where the choice barely matters.
 
 
+## 2026-09-22 (midday) — seed robustness: the k=16 operator result is fragile
+- **DeepONet k=16 fails to train on 2 of 3 seeds**: nonfinite training loss at epoch 15 (seed 43)
+  and epoch 22 (seed 44); only seed 42 completed. So large-k unrolled training is unstable
+  *during training*, not only at rollout time, and the headline "DeepONet k=16 AR 0.318" is a
+  single-seed number until this is resolved. Testing the standard mitigation (lr 1e-3 -> 3e-4)
+  over seeds 42/43/44; if it holds, the paper reports k=16 with the lower lr and states that
+  the default lr diverges in 2/3 seeds.
+- Every published k-step number in this benchmark needs the same treatment; single-seed
+  operator results are not reportable.
+- Housekeeping: reclaimed ~70 GB by deleting latent caches of finished/dead runs (they are
+  regenerable and `test` does not use them). Kept the caches of the six selected configs.
+  Disk 93% -> 306 GB free.
+
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.
