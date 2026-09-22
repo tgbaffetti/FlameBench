@@ -3,17 +3,20 @@ import time
 from pathlib import Path
 import numpy as np
 import torch
+from DataProcessing.Dataset import keep_recent
 from .metrics import FieldMetrics, relative_l2, gain_phase
 from utils import write_json
 
 
-def forcing_window(phi, target, Ni):
-    """phi(target-Ni-1 : target), inclusive; pre-zero forcing equals one."""
-    start = target - Ni - 1
-    values = np.array(phi[max(start, 0):target+1], dtype=np.float32)
-    if start < 0:
-        values = np.concatenate((np.ones(-start, dtype=np.float32), values))
-    return values[None]
+def forcing_window(phi, target, length, Ni):
+    """Forcing rows phi(s+1) - 1 for predicting x(target): phi(target-length+1 .. target) - 1.
+
+    Forcing before time zero equals one (deviation zero); rows older than the last Ni + 1 are zero.
+    """
+    start = target - length + 1
+    values = np.array(phi[max(start, 0):target + 1], dtype=np.float32) - 1
+    values = np.concatenate((np.zeros(max(-start, 0), dtype=np.float32), values))
+    return keep_recent(values[None], Ni + 1)
 
 
 def synchronize(model):
@@ -31,26 +34,33 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
         raise ValueError("Confirm initial_snapshot_is_steady=true in the metadata before steady-start evaluation")
     if initialization not in {"steady", "observed_history"}:
         raise ValueError("Unknown initialization protocol")
+    def cells(frame):
+        if dataset.grid_indices is None:
+            return frame
+        rows, columns = dataset.grid_indices
+        return frame[..., rows, columns]
+
     volumes = None
     if heat_release:
         if not metadata.get("cell_volumes"):
             raise ValueError("Integrated Q requires physical cell volumes; set cell_volumes or explicitly disable heat_release")
         volumes = np.load(metadata["cell_volumes"], allow_pickle=False)
-        if volumes.shape != (dataset.field_shape[-1],) or not np.isfinite(volumes).all() or np.any(volumes <= 0):
+        if volumes.shape != (len(dataset.grid_indices[0]) if dataset.grid_indices is not None else dataset.field_shape[-1],) or not np.isfinite(volumes).all() or np.any(volumes <= 0):
             raise ValueError("Cell volumes must be finite, positive, and aligned with cells")
         q_index = metadata["fields"].index("mix:Q")
     results = {}
-    for case, lo, hi in dataset.segments():
+    length = dataset.length
+    for case, lo, hi in dataset.segments:
         x, phi = dataset.arrays(case)
-        first = lo + (1 if initialization == "steady" else dataset.context)
+        first = lo + (1 if initialization == "steady" else length)
         if initialization == "steady":
-            initial = np.repeat(np.array(x[lo:lo+1]), dataset.history, axis=0)
+            initial = np.repeat(np.array(x[lo:lo+1]), length, axis=0)
         else:
-            initial = np.array(x[first-dataset.history:first])
-        history = compressor.encode(scaler.transform(initial))[None]
+            initial = np.array(x[first-length:first])
+        states = keep_recent(compressor.encode(scaler.transform(initial))[None], dataset.Nx + 1)
         # Warm up transition and decoder. Timing excludes disk reads and metrics.
-        forcing = forcing_window(phi, first, dataset.Ni)
-        warmup_latent = model.predict(history, forcing)
+        forcing = forcing_window(phi, first, length, dataset.Ni)
+        warmup_latent = model.predict(states, forcing)
         scaler.inverse(compressor.decode(warmup_latent))
         synchronize(model)
         metrics, elapsed = FieldMetrics(metadata["fields"]), 0.0
@@ -60,21 +70,21 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
             output = np.lib.format.open_memmap(directory / f"{case['name']}_predictions.npy", mode="w+",
                        dtype="float32", shape=(hi-first, *dataset.field_shape))
         for k in range(first, hi):
-            forcing = forcing_window(phi, k, dataset.Ni)
+            forcing = forcing_window(phi, k, length, dataset.Ni)
             synchronize(model)
             begin = time.perf_counter()
-            z = model.predict(history, forcing)
+            z = model.predict(states, forcing)
             predicted = scaler.inverse(compressor.decode(z))[0]
             synchronize(model)
             elapsed += time.perf_counter()-begin
             reference = np.array(x[k])
-            metrics.update(predicted, reference)
+            metrics.update(cells(predicted), cells(reference))
             if output is not None:
                 output[k-first] = predicted
             if volumes is not None:
-                q_pred.append(float(np.dot(predicted[q_index].astype(np.float64), volumes)))
-                q_ref.append(float(np.dot(reference[q_index].astype(np.float64), volumes)))
-            history = np.concatenate((history[:, 1:], z[:, None]), axis=1)
+                q_pred.append(float(np.dot(cells(predicted)[q_index].astype(np.float64), volumes)))
+                q_ref.append(float(np.dot(cells(reference)[q_index].astype(np.float64), volumes)))
+            states = keep_recent(np.concatenate((states[:, 1:], z[:, None]), axis=1), dataset.Nx + 1)
         if output is not None:
             output.flush()
             del output
@@ -88,7 +98,7 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
             times = np.arange(first, hi)*metadata["dt"]
             np.savez(directory / f"{case['name']}_Q.npz", time=times, reference=q_ref, predicted=q_pred)
             if case["waveform"] == "sine":
-                q0 = float(np.dot(np.asarray(x[0, q_index], dtype=np.float64), volumes))
+                q0 = float(np.dot(np.asarray(cells(x[0])[q_index], dtype=np.float64), volumes))
                 result["gain_phase"] = gain_phase(q_pred, q_ref, phi[first:hi], times,
                        case["frequency_hz"], q0, gain_phase_start)
         else:

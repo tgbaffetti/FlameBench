@@ -5,6 +5,7 @@
   "device": "cuda",
   "cpu_threads": 4,
   "validation_fraction": 0.2,
+  "blocks": 20,
   "batch_size": 64,
   "workers": 0,
   "preprocessing_batch_size": 64,
@@ -19,7 +20,9 @@
     "layers": 2,
     "lr": 0.001,
     "epochs": 100,
-    "patience": 20
+    "patience": 20,
+    "rollout_steps": 10,
+    "rollout_weight": 0.5
   },
   "logging": {
     "wandb": {

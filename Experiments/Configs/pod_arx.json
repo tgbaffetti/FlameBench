@@ -5,6 +5,7 @@
   "device": "cpu",
   "cpu_threads": 4,
   "validation_fraction": 0.2,
+  "blocks": 20,
   "batch_size": 64,
   "workers": 0,
   "preprocessing_batch_size": 64,

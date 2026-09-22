@@ -8,21 +8,40 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from DataProcessing.metadata import load_metadata
-from DataProcessing.Dataset import TrainingDataset, TestDataset
+from DataProcessing.Dataset import CompressorDataset, ForecasterDataset, keep_recent
 from DataProcessing.scaling import FeatureScaler
-from DataProcessing.latent import LatentDataset
 from Baselines.OrderReduction.Linear.POD import POD
 from Baselines.OrderReduction.DL.AE import AE
-from Baselines.OrderReduction.DL.VAE import VAE
+from Baselines.OrderReduction.DL.CAE import CAE
+from Baselines.OrderReduction.DL.ViTAE import ViTAE
 from Baselines.Forecast.Classical.ARX import ARX, Constant
+from Baselines.Forecast.DL.DLModel import DLModel
 from Baselines.Forecast.DL.networks import GRU, LSTM, Transformer
+from .evaluation import forcing_window
 from .logging import ExperimentLogger
 from .paths import new_run_name, run_directory
-from .evaluation import evaluate
 from utils import seed_everything, write_json, provenance
 
-COMPRESSORS = {"pod": POD, "ae": AE, "vae": VAE}
-MODELS = {"arx": ARX, "persistence": Constant, "gru": GRU, "lstm": LSTM, "transformer": Transformer}
+COMPRESSORS = {"pod": POD, "cae": CAE, "vit_ae": ViTAE}
+MODELS = {"arx": ARX, "constant": Constant, "gru": GRU, "lstm": LSTM, "transformer": Transformer}
+
+
+CONFIG_KEYS = {"metadata", "output", "run_name", "seed", "trial", "device", "cpu_threads", "validation_fraction", "blocks",
+               "batch_size", "joint_batch_size", "workers", "preprocessing_batch_size", "compressor", "model", "logging",
+               "evaluation", "Nx", "Ni", "validation_horizon"}
+
+
+def check_config(config):
+    unknown = set(config) - CONFIG_KEYS
+    if unknown:
+        raise ValueError(f"Unknown config keys: {sorted(unknown)}")
+
+
+def to_device(obj, device):
+    """Move torch-backed compressors and models; numpy ones have no device."""
+    if isinstance(obj, (AE, DLModel)):
+        obj.to(device)
+    return obj
 
 
 def dump(path, value):
@@ -32,42 +51,51 @@ def dump(path, value):
     temporary.replace(path)
 
 
-def loader(dataset, cfg, shuffle=False):
-    return DataLoader(dataset, batch_size=cfg.get("batch_size", 64), shuffle=shuffle,
+def loader(dataset, cfg, shuffle=False, batch_size=None):
+    return DataLoader(dataset, batch_size=batch_size or cfg.get("batch_size", 64), shuffle=shuffle,
                       num_workers=cfg.get("workers", 0), persistent_workers=cfg.get("workers", 0)>0)
 
 
-def validation_rollout(model, latent_dataset):
-    """Selection objective: recursive latent MSE on validation, no test data access."""
+def validation_rollout(model, compressor, dataset):
+    """Selection objective: recursive MSE of scaled fields on validation, valid pixels only.
+
+    dataset: scaled validation ForecasterDataset. Each segment is rolled out from its first
+    `length` frames to its end. Field space keeps scores comparable when the compressor differs
+    between trials (joint training). No test data access.
+    """
     sse = count = 0
-    for data_path, phi_path in latent_dataset.paths:
-        x, phi = np.load(data_path, mmap_mode="r"), np.load(phi_path, mmap_mode="r")
-        first = latent_dataset.context
-        history = np.array(x[first-latent_dataset.history:first])[None]
-        for k in range(first, len(x)):
-            forcing = np.array(phi[k-latent_dataset.Ni-1:k+1], dtype=np.float32)[None]
-            predicted = model.predict(history, forcing)
+    for case, lo, hi in dataset.segments:
+        _, phi = dataset.arrays(case)
+        first = lo + dataset.length
+        states = keep_recent(compressor.encode(dataset.frames(case, lo, first))[None], dataset.Nx + 1)
+        for k in range(first, hi):
+            predicted = model.predict(states, forcing_window(phi, k, dataset.length, dataset.Ni))
             if not np.isfinite(predicted).all():
                 return float("inf")
-            sse += float(np.square(predicted[0].astype(np.float64)-x[k]).sum())
-            count += x.shape[-1]
-            history = np.concatenate((history[:, 1:], predicted[:, None]), axis=1)
+            error = compressor.decode(predicted)[0] - dataset.frames(case, k, k + 1)[0]
+            if dataset.mask is not None:
+                error = error[..., dataset.mask]
+            sse += float(np.square(error, dtype=np.float64).sum())
+            count += error.size
+            states = keep_recent(np.concatenate((states[:, 1:], predicted[:, None]), axis=1), dataset.Nx + 1)
     return sse/count
 
 
-def fit(config, resume=False):
+def fit(config, resume=False, preprocessing=None):
+    """preprocessing: shared stage-A (scaler, compressor) pickle, created if missing (used by HPO trials)."""
+    check_config(config)
     cfg = copy.deepcopy(config)
     cfg.setdefault("seed", 42)
     if not cfg.get("run_name") and not resume:
         cfg["run_name"] = new_run_name(cfg)
     directory = run_directory(cfg)
     print(f"Run directory: {directory}", flush=True)
-    seed_everything(cfg.get("seed", 42))
+    seed_everything(cfg["seed"])
     torch.set_num_threads(cfg.get("cpu_threads", 4))
-    directory.mkdir(parents=True, exist_ok=resume)
+    if directory.exists() and not resume:
+        raise FileExistsError(f"Run exists: {directory}; choose a new run name or --resume")
+    directory.mkdir(parents=True, exist_ok=True)
     config_path = directory / "config.json"
-    if config_path.exists() and not resume:
-        raise FileExistsError(f"Run exists: {directory}; choose a new output or --resume")
     if resume and config_path.exists():
         old = json.loads(config_path.read_text())
         if old != cfg:
@@ -79,53 +107,60 @@ def fit(config, resume=False):
     if resume and metadata_path.exists() and json.loads(metadata_path.read_text()) != metadata:
         raise ValueError("Dataset metadata changed since original run")
     write_json(metadata_path, metadata)
-    training = TrainingDataset(metadata, Nx=cfg["Nx"], Ni=cfg["Ni"], validation_fraction=cfg["validation_fraction"])
-    validation = TrainingDataset(metadata, Nx=cfg["Nx"], Ni=cfg["Ni"], validation_fraction=cfg["validation_fraction"], partition="validation")
+    # Compressor and forecaster datasets share the same block split, so they see the same frames.
+    split = dict(validation_fraction=cfg["validation_fraction"], blocks=cfg.get("blocks", 20))
     logger = ExperimentLogger(directory, cfg, resume)
     try:
-        preprocessing = directory / "preprocessing.pkl"
-        if resume and preprocessing.exists():
+        shared = preprocessing is not None
+        preprocessing = Path(preprocessing) if shared else directory / "preprocessing.pkl"
+        if (resume or shared) and preprocessing.exists():
             with preprocessing.open("rb") as file:
                 scaler, compressor = pickle.load(file)
         else:
-            scaler = FeatureScaler().fit(training.snapshot_batches(cfg.get("preprocessing_batch_size", 64)))
+            frames = CompressorDataset(metadata, "train", **split)
+            scaler = FeatureScaler(frames.mask).fit(DataLoader(frames, cfg.get("preprocessing_batch_size", 64)))
             cc = cfg["compressor"].copy()
             name = cc.pop("name")
-            if name in {"ae", "vae"}:
+            if issubclass(COMPRESSORS[name], AE):
                 cc["device"] = cfg.get("device", "cpu")
             compressor = COMPRESSORS[name](**cc)
-            compressor.fit(training, scaler, validation=validation, logger=logger)
-            if isinstance(compressor, AE):
-                compressor.device = "cpu"
-                compressor.encoder.cpu()
-                compressor.decoder.cpu()
-            dump(preprocessing, (scaler, compressor))
-        if isinstance(compressor, AE):
-            compressor.device = cfg.get("device", "cpu")
-            compressor.encoder.to(compressor.device)
-            compressor.decoder.to(compressor.device)
-        train_z = LatentDataset(training, compressor, scaler, directory/"latent"/"training")
-        val_z = LatentDataset(validation, compressor, scaler, directory/"latent"/"validation")
+            compressor.fit(CompressorDataset(metadata, "train", scaler=scaler, **split),
+                           validation=CompressorDataset(metadata, "validation", scaler=scaler, **split), logger=logger)
+            dump(preprocessing, (scaler, to_device(compressor, "cpu")))
+        to_device(compressor, cfg.get("device", "cpu"))
+        # Training windows carry rollout_steps targets for the multi-step loss; validation windows
+        # carry validation_horizon targets, so a model trained on K steps is checked on longer rollouts.
+        # validation_horizon is raised to rollout_steps when shorter (HPO may sample any rollout_steps).
+        rollout_steps = cfg["model"].get("rollout_steps", 1)
+        validation_horizon = max(cfg.get("validation_horizon", 1), rollout_steps)
+        windows = dict(Nx=cfg["Nx"], Ni=cfg["Ni"], scaler=scaler, **split)
+        train_z = ForecasterDataset(metadata, "train", horizon=rollout_steps, compressor=compressor, **windows)
+        val_z = ForecasterDataset(metadata, "validation", horizon=validation_horizon, compressor=compressor, **windows)
+        validation = ForecasterDataset(metadata, "validation", horizon=validation_horizon, **windows)
         mc = cfg["model"].copy()
         name = mc.pop("name")
         model = MODELS[name](rank=compressor.rank, Nx=cfg["Nx"], Ni=cfg["Ni"], device=cfg.get("device", "cpu"), **mc)
-        model.fit(loader(train_z, cfg, shuffle=name not in {"arx", "persistence"}), loader(val_z, cfg),
+        model.fit(loader(train_z, cfg, shuffle=isinstance(model, DLModel)), loader(val_z, cfg),
                   logger=logger, directory=directory, resume=resume)
-        score = validation_rollout(model, val_z)
+        if isinstance(model, DLModel) and isinstance(compressor, AE) and model.frozen_epochs < model.epochs:
+            batch_size = cfg.get("joint_batch_size", 8)
+            training = ForecasterDataset(metadata, "train", horizon=rollout_steps, **windows)
+            model.fit_joint(compressor, loader(training, cfg, shuffle=True, batch_size=batch_size),
+                            loader(validation, cfg, batch_size=batch_size), logger=logger)
+        score = validation_rollout(model, compressor, validation)
         if not np.isfinite(score):
             raise FloatingPointError("Validation rollout diverged; model not eligible for selection")
-        logger.log({"validation/rollout_latent_mse": score}, cfg["model"].get("epochs", 0))
-        if hasattr(model, "network"):
-            model.network.cpu()
-            model.device = torch.device("cpu")
-        dump(directory/"model.pkl", model)
-        write_json(directory/"summary.json", {"validation_rollout_latent_mse": score})
+        logger.log({"validation/rollout_field_mse": score}, cfg["model"].get("epochs", 0))
+        # Everything test() needs; the compressor is saved here because joint training changes it.
+        dump(directory/"model.pkl", (scaler, to_device(compressor, "cpu"), to_device(model, "cpu")))
+        write_json(directory/"summary.json", {"validation_rollout_field_mse": score})
         return score
     finally:
         logger.close()
 
 
 def test(config):
+    check_config(config)
     seed_everything(config.get("seed", 42))
     torch.set_num_threads(config.get("cpu_threads", 4))
     directory = run_directory(config)
@@ -135,22 +170,15 @@ def test(config):
     for key in ("Nx", "Ni", "compressor", "model"):
         if config[key] != trained_config[key]:
             raise ValueError(f"Evaluation {key} differs from the trained configuration")
-    with (directory/"preprocessing.pkl").open("rb") as file:
-        scaler, compressor = pickle.load(file)
     with (directory/"model.pkl").open("rb") as file:
-        model = pickle.load(file)
+        scaler, compressor, model = pickle.load(file)
     device = config.get("device", "cpu")
-    if hasattr(model, "network"):
-        model.device = torch.device(device)
-        model.network.to(model.device)
-    if isinstance(compressor, AE):
-        compressor.device = device
-        compressor.encoder.to(device)
-        compressor.decoder.to(device)
-    dataset = TestDataset(load_metadata(config["metadata"]), Nx=config["Nx"], Ni=config["Ni"])
+    to_device(model, device)
+    to_device(compressor, device)
+    dataset = ForecasterDataset(load_metadata(config["metadata"]), "test", Nx=config["Nx"], Ni=config["Ni"])
     logger = ExperimentLogger(directory, config, resume=True)
     try:
-        results = evaluate(model, dataset, compressor, scaler, directory, **config.get("evaluation", {}))
+        results = model.test(dataset, compressor, scaler, directory, **config.get("evaluation", {}))
         for i, (name, result) in enumerate(results.items()):
             scalars = {f"test/{name}/mean_nrmse": result["mean_nrmse"],
                        f"test/{name}/heat_release_relative_l2": result.get("heat_release_relative_l2"),
@@ -167,29 +195,29 @@ def test(config):
 
 
 def hpo(config, trials):
-    import optuna
+    """Tune cfg["model"] on the validation rollout, then test the best trial.
+
+    Every trial shares one scaler and compressor (preprocessing.pkl in the HPO folder) and saves
+    its fitted model in its own trial folder, so the best trial is tested without refitting.
+    """
     config = copy.deepcopy(config)
     if not config.get("run_name"):
         config["run_name"] = new_run_name(config)
     root = run_directory(config)
     root.mkdir(parents=True, exist_ok=True)
     print(f"HPO directory: {root}", flush=True)
-    def objective(trial):
+    def objective(trial, params):
         cfg = copy.deepcopy(config)
         cfg["trial"] = trial.number
-        for key, spec in MODELS[cfg["model"]["name"]].hyperparams.items():
-            if spec["type"] == "categorical":
-                value = trial.suggest_categorical(key, spec["choices"])
-            elif spec["type"] == "int":
-                value = trial.suggest_int(key, spec["low"], spec["high"])
-            else:
-                value = trial.suggest_float(key, spec["low"], spec["high"], log=spec.get("log", False))
-            cfg["model"][key] = value
-        return fit(cfg)
-    study = optuna.create_study(study_name="forecast", storage=f"sqlite:///{root.resolve() / 'optuna.db'}",
-                load_if_exists=True, direction="minimize", sampler=optuna.samplers.TPESampler(seed=config.get("seed",42)))
-    study.optimize(objective, n_trials=trials, catch=(FloatingPointError,))
+        cfg["model"].update(params)
+        return fit(cfg, preprocessing=root / "preprocessing.pkl")
+    study = MODELS[config["model"]["name"]].HPO(objective, trials, config.get("seed", 42),
+                                                storage=f"sqlite:///{root.resolve() / 'optuna.db'}")
     write_json(root/"best.json", {"trial": study.best_trial.number, "value": study.best_value, "params": study.best_params})
+    best = copy.deepcopy(config)
+    best["trial"] = study.best_trial.number
+    best["model"].update(study.best_params)
+    return study, test(best)
 
 
 def main():

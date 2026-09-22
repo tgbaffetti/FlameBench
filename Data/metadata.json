@@ -41,8 +41,8 @@
       "frequency_description": "1\u201380\u20131 Hz sweep; exact waveform supplied in phi",
       "source_data": "sineSweep_f1_f80_A02.npz",
       "source_phi": "phi_sineSweep_f1_f80_A02.npz",
-      "data": "Training/sineSweep_f1_f80_A02.npy",
-      "phi": "Training/phi_sineSweep_f1_f80_A02.npy"
+      "data": "Images/Training/sineSweep_f1_f80_A02.npy",
+      "phi": "Images/Training/phi_sineSweep_f1_f80_A02.npy"
     },
     {
       "name": "sineSweep_f1_f80_A04",
@@ -54,8 +54,8 @@
       "frequency_description": "1\u201380\u20131 Hz sweep; exact waveform supplied in phi",
       "source_data": "sineSweep_f1_f80_A04.npz",
       "source_phi": "phi_sineSweep_f1_f80_A04.npz",
-      "data": "Training/sineSweep_f1_f80_A04.npy",
-      "phi": "Training/phi_sineSweep_f1_f80_A04.npy"
+      "data": "Images/Training/sineSweep_f1_f80_A04.npy",
+      "phi": "Images/Training/phi_sineSweep_f1_f80_A04.npy"
     },
     {
       "name": "sine_f10_A03",
@@ -67,8 +67,8 @@
       "frequency_description": "fixed frequency",
       "source_data": "sine_f10_A03.npz",
       "source_phi": "phi_sine_f10_A03.npz",
-      "data": "Test/sine_f10_A03.npy",
-      "phi": "Test/phi_sine_f10_A03.npy"
+      "data": "Images/Test/sine_f10_A03.npy",
+      "phi": "Images/Test/phi_sine_f10_A03.npy"
     },
     {
       "name": "sine_f10_A05",
@@ -80,8 +80,8 @@
       "frequency_description": "fixed frequency",
       "source_data": "sine_f10_A05.npz",
       "source_phi": "phi_sine_f10_A05.npz",
-      "data": "Test/sine_f10_A05.npy",
-      "phi": "Test/phi_sine_f10_A05.npy"
+      "data": "Images/Test/sine_f10_A05.npy",
+      "phi": "Images/Test/phi_sine_f10_A05.npy"
     },
     {
       "name": "sine_f40_A03",
@@ -93,8 +93,8 @@
       "frequency_description": "fixed frequency",
       "source_data": "sine_f40_A03.npz",
       "source_phi": "phi_sine_f40_A03.npz",
-      "data": "Test/sine_f40_A03.npy",
-      "phi": "Test/phi_sine_f40_A03.npy"
+      "data": "Images/Test/sine_f40_A03.npy",
+      "phi": "Images/Test/phi_sine_f40_A03.npy"
     },
     {
       "name": "sine_f40_A05",
@@ -106,8 +106,8 @@
       "frequency_description": "fixed frequency",
       "source_data": "sine_f40_A05.npz",
       "source_phi": "phi_sine_f40_A05.npz",
-      "data": "Test/sine_f40_A05.npy",
-      "phi": "Test/phi_sine_f40_A05.npy"
+      "data": "Images/Test/sine_f40_A05.npy",
+      "phi": "Images/Test/phi_sine_f40_A05.npy"
     },
     {
       "name": "step_A03",
@@ -119,8 +119,8 @@
       "frequency_description": "step at t=0",
       "source_data": "step_A03.npz",
       "source_phi": "phi_step_A03.npz",
-      "data": "Test/step_A03.npy",
-      "phi": "Test/phi_step_A03.npy"
+      "data": "Images/Test/step_A03.npy",
+      "phi": "Images/Test/phi_step_A03.npy"
     },
     {
       "name": "step_A05",
@@ -132,8 +132,11 @@
       "frequency_description": "step at t=0",
       "source_data": "step_A05.npz",
       "source_phi": "phi_step_A05.npz",
-      "data": "Test/step_A05.npy",
-      "phi": "Test/phi_step_A05.npy"
+      "data": "Images/Test/step_A05.npy",
+      "phi": "Images/Test/phi_step_A05.npy"
     }
-  ]
+  ],
+  "grid": "grid.vtu",
+  "grid_indices": "grid_indices.npz",
+  "layout": "time,field,z_reversed,x"
 }

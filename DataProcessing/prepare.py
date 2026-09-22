@@ -1,4 +1,4 @@
-"""Stream NPZ extraction and transpose into disk-backed (time, field, cell) NPY."""
+"""Stream raw fields into disk-backed cell arrays, or channel-first images when metadata names a grid."""
 import argparse
 import shutil
 import tempfile
@@ -6,9 +6,10 @@ import zipfile
 from pathlib import Path
 import numpy as np
 from .metadata import load_metadata
+from .process4convolution import ImageGrid
 
 
-def convert(source, target, fields, block_cells=128):
+def convert(source, target, fields, block_cells=128, grid=None):
     source, target = Path(source), Path(target)
     if not source.exists():
         raise FileNotFoundError(source)
@@ -29,12 +30,17 @@ def convert(source, target, fields, block_cells=128):
             if raw.ndim != 3 or raw.shape[1] != fields:
                 raise ValueError(f"Expected (cells, {fields}, time); got {raw.shape}")
             nc, nf, nt = raw.shape
-            out = np.lib.format.open_memmap(staged, mode="w+", dtype="float32", shape=(nt, nf, nc))
+            out = np.lib.format.open_memmap(staged, mode="w+", dtype="float32", shape=(nt, nf, nc) if grid is None else (nt, nf, *grid.shape))
+            if grid is not None and len(grid.rows) != nc:
+                raise ValueError("Mesh cell count does not match data")
             for start in range(0, nc, block_cells):
                 block = raw[start:start + block_cells]
                 if not np.isfinite(block).all():
                     raise ValueError(f"Nonfinite data in {source}")
-                out[:, :, start:start + block_cells] = block.transpose(2, 1, 0)
+                if grid is None:
+                    out[:, :, start:start + block_cells] = block.transpose(2, 1, 0)
+                else:
+                    out[:, :, grid.rows[start:start + block_cells], grid.columns[start:start + block_cells]] = block.transpose(2, 1, 0)
         else:
             if raw.ndim != 1 or not np.isfinite(raw).all():
                 raise ValueError(f"Expected finite 1D forcing: {source}")
@@ -47,6 +53,9 @@ def convert(source, target, fields, block_cells=128):
 
 def prepare(metadata_path, source_root, overwrite=False):
     metadata = load_metadata(metadata_path)
+    grid = ImageGrid.read(metadata["grid"]) if metadata.get("grid") else None
+    if grid is not None:
+        grid.save(metadata["grid_indices"])
     for case in metadata["cases"]:
         for key in ("data", "phi"):
             target = Path(case[key])
@@ -55,9 +64,11 @@ def prepare(metadata_path, source_root, overwrite=False):
                 print(f"Keeping {target}", flush=True)
                 continue
             print(f"Converting {source} -> {target}", flush=True)
-            convert(source, target, len(metadata["fields"]) if key == "data" else 0)
+            convert(source, target, len(metadata["fields"]) if key == "data" else 0, grid=grid if key == "data" else None)
         data = np.load(case["data"], mmap_mode="r")
         phi = np.load(case["phi"], mmap_mode="r")
+        if grid is not None and data.shape[1:] != (len(metadata["fields"]), *grid.shape):
+            raise ValueError("Existing data is not an image; run image preparation first")
         expected = round(case["duration"] / metadata["dt"]) + 1
         if data.shape[0] != len(phi) or len(phi) != expected:
             raise ValueError(f"Timestamp/length mismatch in {case['name']}")

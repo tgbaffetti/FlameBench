@@ -6,14 +6,11 @@ import pytest
 import torch
 from torch.utils.data import DataLoader
 from DataProcessing.prepare import convert
-from DataProcessing.Dataset import TrainingDataset, TestDataset
+from DataProcessing.Dataset import CompressorDataset, ForecasterDataset
 from DataProcessing.scaling import FeatureScaler
-from DataProcessing.latent import LatentDataset
 from Baselines.OrderReduction.Linear.POD import POD
 from Baselines.Forecast.Classical.ARX import ARX
 from Baselines.Forecast.DL.networks import GRU, LSTM, Transformer
-from Baselines.OrderReduction.DL.AE import AE
-from Baselines.OrderReduction.DL.VAE import VAE
 from Experiments.metrics import FieldMetrics, gain_phase, relative_l2
 from Experiments.evaluation import evaluate
 from Experiments.run import fit, test as run_test, hpo
@@ -40,6 +37,17 @@ def metadata(tmp_path):
             'cell_volumes':str(volumes),'cases':cases}
 
 
+def windows(states, forcing, target):
+    return [{'states': x, 'forcing': u, 'target': y} for x, u, y in zip(states, forcing, target)]
+
+
+def scaled_pod(metadata, partition='train'):
+    # 10 blocks of 8 frames: the 81-frame fixture is too short for the default 20 blocks.
+    frames = CompressorDataset(metadata, partition, blocks=10)
+    scaler = FeatureScaler().fit(DataLoader(frames, batch_size=8))
+    return scaler, POD(rank=2, batch_size=8).fit(CompressorDataset(metadata, partition, blocks=10, scaler=scaler))
+
+
 def test_stream_conversion(tmp_path):
     raw=np.arange(5*2*13,dtype=np.float64).reshape(5,2,13)
     source,target=tmp_path/'raw.npz',tmp_path/'prepared.npy'
@@ -50,36 +58,44 @@ def test_stream_conversion(tmp_path):
     np.testing.assert_array_equal(result,raw.transpose(2,1,0))
 
 
-def test_no_split_or_trajectory_leakage(metadata):
-    train=TrainingDataset(metadata,Nx=2,Ni=0,validation_fraction=0.25)
-    val=TrainingDataset(metadata,Nx=2,Ni=0,validation_fraction=0.25,partition='validation')
-    for (_,lo,hi),(_,v_lo,v_hi) in zip(train.segments(),val.segments()):
-        assert hi==v_lo
-    assert len(train)==2*(60-3)
-    for index in [0,len(train)//2-1,len(train)//2,len(train)-1]:
-        assert train[index]['history'].shape==(3,2,4)
-    scaler=FeatureScaler().fit(train.snapshot_batches(7))
-    full=np.concatenate(list(train.snapshot_batches(7)))
-    np.testing.assert_allclose(scaler.mean,full.astype('float64').mean(axis=(0,2)),rtol=1e-6)
+def test_block_split_without_leakage(metadata):
+    from DataProcessing.Dataset import split_segments
+    assert split_segments(100, 'validation', 0.2, 10) == [(20, 30), (70, 80)]
+    assert split_segments(100, 'train', 0.2, 10) == [(0, 20), (30, 70), (80, 100)]
+    with pytest.raises(ValueError, match='validation_fraction'):
+        split_segments(100, 'train', 0.01, 10)
+    train = CompressorDataset(metadata, 'train', validation_fraction=0.25)
+    val = CompressorDataset(metadata, 'validation', validation_fraction=0.25)
+    for case in metadata['cases'][:2]:
+        # Every frame belongs to exactly one partition.
+        used = sorted(t for c, lo, hi in train.segments + val.segments if c is case for t in range(lo, hi))
+        assert used == list(range(81))
+    # The forecaster windows use the same frames as the compressor and never cross a segment.
+    forecaster = ForecasterDataset(metadata, 'train', Nx=2, validation_fraction=0.25)
+    assert forecaster.segments == train.segments
+    assert len(forecaster) == sum(hi - lo - 3 for _, lo, hi in train.segments)
+    scaler = FeatureScaler().fit(DataLoader(train, batch_size=7))
+    full = np.stack([train[i].numpy() for i in range(len(train))])
+    np.testing.assert_allclose(scaler.mean, full.astype('float64').mean(axis=(0, 2)), rtol=1e-6)
     # Changing validation values must not change fitted statistics.
-    for case,lo,hi in val.segments():
-        a=np.load(case['data'],mmap_mode='r+'); a[lo:hi]=1e6;a.flush()
-    other=FeatureScaler().fit(train.snapshot_batches(5))
-    np.testing.assert_allclose(other.mean,scaler.mean)
-    assert len(list(DataLoader(train,batch_size=8,num_workers=0)))>0
+    for case, lo, hi in val.segments:
+        a = np.load(case['data'], mmap_mode='r+'); a[lo:hi] = 1e6; a.flush()
+    other = FeatureScaler().fit(DataLoader(CompressorDataset(metadata, 'train', validation_fraction=0.25), batch_size=5))
+    np.testing.assert_allclose(other.mean, scaler.mean)
 
 
 def test_pod_arx_and_recursive_metrics(metadata,tmp_path):
-    train=TrainingDataset(metadata,Nx=2)
-    scaler=FeatureScaler().fit(train.snapshot_batches(8))
-    pod=POD(rank=2,batch_size=8).fit(train,scaler)
-    latent=LatentDataset(train,pod,scaler,tmp_path/'latent',batch_size=8)
-    model=ARX(alpha=1e-8).fit(DataLoader(latent,batch_size=8))
-    results=evaluate(model,TestDataset(metadata,Nx=2),pod,scaler,tmp_path/'eval')
+    # The synthetic system is first order in x and uses phi(t) and phi(t+1), so Nx=0, Ni=1
+    # recovery is exact. With Nx>0 and a single-frequency sine, lagged states are nearly
+    # collinear and the fit is ill-posed.
+    scaler,pod=scaled_pod(metadata)
+    latent=ForecasterDataset(metadata,'train',Nx=0,Ni=1,scaler=scaler,compressor=pod)
+    model=ARX(Nx=0,Ni=1,alpha=1e-8).fit(DataLoader(latent,batch_size=8))
+    results=evaluate(model,ForecasterDataset(metadata,'test',Nx=0,Ni=1),pod,scaler,tmp_path/'eval')
     case=results['sine']
     assert case['forecast_steps']==80
-    assert case['mean_nrmse']<1e-3
-    assert case['heat_release_relative_l2']<1e-3
+    assert case['mean_nrmse']<1e-5
+    assert case['heat_release_relative_l2']<1e-5
     q=np.load(tmp_path/'eval'/'sine_Q.npz')
     x=np.load(metadata['cases'][-1]['data'])
     np.testing.assert_allclose(q['reference'],x[1:,1]@np.array([1,2,3,4]),rtol=1e-6)
@@ -108,33 +124,21 @@ def test_metrics_and_harmonics():
 def test_neural_fit_resume(cls,Nx,Ni,tmp_path):
     torch.set_num_threads(1)
     torch.manual_seed(1)
-    history=torch.randn(16,Nx+1,2)
-    forcing=torch.ones(16,Ni+2)
-    target=history[:,-1]*0.9
-    data=DataLoader(torch.utils.data.TensorDataset(history,forcing,target),batch_size=8)
+    length=max(Nx,Ni)+1
+    states=torch.randn(16,length,2)
+    data=DataLoader(windows(states,torch.zeros(16,length),states[:,-1:]*0.9),batch_size=8)
     model=cls(rank=2,Nx=Nx,Ni=Ni,hidden=8,layers=1,epochs=2)
     model.fit(data,data,directory=tmp_path)
-    output=model.predict(history[:2].numpy(),forcing[:2].numpy())
+    output=model.predict(states[:2].numpy(),np.zeros((2,length),dtype=np.float32))
     assert output.shape==(2,2) and np.isfinite(output).all()
     resumed=cls(rank=2,Nx=Nx,Ni=Ni,hidden=8,layers=1,epochs=3)
     resumed.fit(data,data,directory=tmp_path,resume=True)
     assert torch.load(tmp_path/'last.pt',weights_only=False)['epoch']==2
 
 
-@pytest.mark.parametrize('cls',[AE,VAE])
-def test_learned_compressor(cls,metadata):
-    train=TrainingDataset(metadata,Nx=2)
-    val=TrainingDataset(metadata,Nx=2,partition='validation')
-    scaler=FeatureScaler().fit(train.snapshot_batches())
-    compressor=cls(rank=2,hidden=8,epochs=1,batch_size=16).fit(train,scaler,validation=val)
-    raw=next(train.snapshot_batches(2))
-    result=compressor.decode(compressor.encode(scaler.transform(raw)))
-    assert result.shape==raw.shape and np.isfinite(result).all()
-
-
 def test_full_pipeline_and_hpo(metadata,tmp_path):
     path=tmp_path/'metadata.json';path.write_text(json.dumps(metadata))
-    cfg={'metadata':str(path),'output':str(tmp_path/'run'),'run_name':'pod_arx_test','seed':42,'Nx':2,'Ni':0,'validation_fraction':0.2,
+    cfg={'metadata':str(path),'output':str(tmp_path/'run'),'run_name':'pod_arx_test','seed':42,'Nx':2,'Ni':1,'validation_fraction':0.2,
          'compressor':{'name':'pod','rank':2,'batch_size':8},'model':{'name':'arx','alpha':1e-6},
          'logging':{'wandb':{'mode':'disabled'}},'evaluation':{'heat_release':True}}
     score=fit(cfg)
@@ -143,26 +147,30 @@ def test_full_pipeline_and_hpo(metadata,tmp_path):
     assert list((run_directory(cfg)/'tensorboard').glob('events.*'))
     with pytest.raises(FileExistsError): fit(cfg)
     cfg['output']=str(tmp_path/'hpo')
-    hpo(cfg,1)
-    assert (run_directory(cfg)/'best.json').exists()
+    hpo(cfg,2)
+    root=run_directory(cfg)
+    assert (root/'best.json').exists()
+    # Stage A (scaler + compressor) is fitted once at the HPO root and shared by trials.
+    assert (root/'preprocessing.pkl').exists() and not list(root.glob('trial_*/preprocessing.pkl'))
+    assert len(list(root.glob('trial_*/model.pkl')))==2
 
 
 def test_physical_metadata_required(metadata,tmp_path):
     metadata['initial_snapshot_is_steady']=None
     with pytest.raises(ValueError,match='initial_snapshot'):
-        evaluate(None,TestDataset(metadata,Nx=2),None,None,tmp_path)
+        evaluate(None,ForecasterDataset(metadata,'test',Nx=2),None,None,tmp_path)
     metadata['initial_snapshot_is_steady']=True
     metadata['cell_volumes']=None
     with pytest.raises(ValueError,match='physical cell volumes'):
-        evaluate(None,TestDataset(metadata,Nx=2),None,None,tmp_path)
+        evaluate(None,ForecasterDataset(metadata,'test',Nx=2),None,None,tmp_path)
 
 
 def test_reproducible_resume(tmp_path):
     # A resumed shuffled neural fit must match the uninterrupted training path.
     from utils import seed_everything
     torch.set_num_threads(1)
-    history=torch.arange(72,dtype=torch.float32).reshape(12,3,2)/72
-    data=torch.utils.data.TensorDataset(history,torch.ones(12,2),history[:,-1]*0.9)
+    states=torch.arange(72,dtype=torch.float32).reshape(12,3,2)/72
+    data=windows(states,torch.zeros(12,3),states[:,-1:]*0.9)
     def loaders():
         return DataLoader(data,batch_size=4,shuffle=True),DataLoader(data,batch_size=4)
     seed_everything(7)
@@ -178,10 +186,10 @@ def test_reproducible_resume(tmp_path):
 
 
 def test_dataloader_workers(metadata):
-    dataset=TrainingDataset(metadata,Nx=2,Ni=5)
+    dataset=ForecasterDataset(metadata,'train',Nx=2,Ni=5)
     batch=next(iter(DataLoader(dataset,batch_size=4,num_workers=2)))
-    assert batch['history'].shape==(4,3,2,4)
-    assert batch['forcing'].shape==(4,7)
+    assert batch['states'].shape==(4,6,2,4)
+    assert batch['forcing'].shape==(4,6)
     torch.testing.assert_close(batch['target'][0],dataset[0]['target'])
 
 
@@ -232,7 +240,7 @@ def test_walkthrough_notebook(metadata,tmp_path,monkeypatch):
         if first:
             # Only change data paths, small-example sizes, and the logging backend.
             namespace.update(metadata_path=metadata_path,raw_directory=tmp_path/'Raw',
-                             Nx=2,Ni=4,rank=2,batch_size=8,
+                             Nx=2,Ni=4,rank=2,batch_size=8,blocks=10,
                              logging_config={'logging':{'wandb':{'mode':'disabled'}}})
             first=False
     result=namespace['results']['sine']
@@ -243,99 +251,75 @@ def test_walkthrough_notebook(metadata,tmp_path,monkeypatch):
     assert (namespace['output']/'model.pkl').exists()
 
 
-@pytest.mark.parametrize('Nx,Ni',[(0,0),(4,1),(1,5),(0,4)])
-def test_independent_history_alignment(metadata,tmp_path,Nx,Ni):
+@pytest.mark.parametrize('Nx,Ni,horizon',[(0,0,1),(4,1,1),(1,5,1),(2,1,4)])
+def test_forecaster_windows(metadata,Nx,Ni,horizon):
+    length=max(Nx,Ni)+1
     for partition in ['train','validation']:
-        data=TrainingDataset(metadata,Nx=Nx,Ni=Ni,partition=partition)
-        scaler=FeatureScaler().fit(data.snapshot_batches(8))
-        pod=POD(rank=2,batch_size=8).fit(data,scaler)
-        latent=LatentDataset(data,pod,scaler,tmp_path/partition)
-        assert len(latent)==len(data)
+        scaler,pod=scaled_pod(metadata,partition)
+        images=ForecasterDataset(metadata,partition,Nx=Nx,Ni=Ni,horizon=horizon,blocks=10)
+        latent=ForecasterDataset(metadata,partition,Nx=Nx,Ni=Ni,horizon=horizon,blocks=10,scaler=scaler,compressor=pod)
+        assert len(images)==len(latent)==sum(hi-lo-length-horizon+1 for _,lo,hi in images.segments)
         offset=0
-        for case,lo,hi in data.segments():
-            fields,phi=data.arrays(case)
-            context=max(Nx,Ni)+1
-            for index in [offset,offset+hi-lo-context-1]:
-                k=lo+context+index-offset
-                sample=data[index]
-                np.testing.assert_array_equal(sample['history'],fields[k-Nx-1:k])
-                np.testing.assert_array_equal(sample['forcing'],phi[k-Ni-1:k+1])
-                np.testing.assert_array_equal(sample['target'],fields[k])
-                z,u,target=latent[index]
-                np.testing.assert_allclose(z,pod.encode(scaler.transform(sample['history'].numpy())),atol=1e-5)
-                np.testing.assert_array_equal(u,sample['forcing'])
-                assert len(z)==Nx+1 and len(u)==Ni+2
-                assert k-Nx-1>=lo and k-Ni-1>=lo
-            offset+=hi-lo-context
+        for case,lo,hi in images.segments:
+            fields,phi=images.arrays(case)
+            for t in [lo+length-1,hi-horizon-1]:  # First and last window of the segment.
+                index=offset+t-(lo+length-1)
+                states=fields[t-length+1:t+1].copy()
+                states[:length-1-Nx]=0
+                forcing=phi[t-length+2:t+horizon+1]-1
+                forcing[:length-1-Ni]=0
+                sample=images[index]
+                np.testing.assert_array_equal(sample['states'],states)
+                np.testing.assert_allclose(sample['forcing'],forcing)
+                np.testing.assert_array_equal(sample['target'],fields[t+1:t+horizon+1])
+                assert t-length+1>=lo and t+horizon<hi
+                encoded=pod.encode(scaler.transform(fields[t-length+1:t+horizon+1].copy()))
+                encoded[:length-1-Nx]=0
+                np.testing.assert_allclose(latent[index]['states'],encoded[:length],atol=1e-5)
+                np.testing.assert_allclose(latent[index]['target'],encoded[length:],atol=1e-5)
+            offset+=hi-lo-length-horizon+1
 
 
-def test_step_forcing_padding_in_rollout(metadata,tmp_path):
+def test_forcing_padding_in_rollouts(metadata,tmp_path):
     from Experiments.run import validation_rollout
     from Experiments.evaluation import forcing_window
-    np.testing.assert_array_equal(forcing_window(np.array([1.3,1.3,1.3]),1,4),
-                                  np.array([[1,1,1,1,1.3,1.3]],dtype=np.float32))
-    train=TrainingDataset(metadata,Nx=0,Ni=4)
-    scaler=FeatureScaler().fit(train.snapshot_batches())
-    pod=POD(rank=2,batch_size=8).fit(train,scaler)
+    # Predicting x(1) with 5 rows reads phi(-3..1) - 1: zero before time zero, and zero for
+    # rows older than the last Ni + 1.
+    np.testing.assert_allclose(forcing_window(np.array([1.3,1.3,1.3]),1,5,4),[[0,0,0,0.3,0.3]],atol=1e-6)
+    np.testing.assert_allclose(forcing_window(np.array([1.3,1.3,1.3]),1,5,0),[[0,0,0,0,0.3]],atol=1e-6)
+    scaler,pod=scaled_pod(metadata)
     class Recorder:
         def __init__(self):
             self.inputs=[]
-        def predict(self,history,forcing):
-            self.inputs.append((history.copy(),forcing.copy()))
-            return history[:,-1]
+        def predict(self,states,forcing):
+            self.inputs.append((states.copy(),forcing.copy()))
+            return states[:,-1]
     recorder=Recorder()
-    test_data=TestDataset(metadata,Nx=0,Ni=4)
+    test_data=ForecasterDataset(metadata,'test',Nx=0,Ni=4)
     evaluate(recorder,test_data,pod,scaler,tmp_path/'eval',heat_release=False)
     phi=np.load(metadata['cases'][-1]['phi'])
-    for k,(history,u) in enumerate(recorder.inputs[1:],start=1):
-        assert history.shape==(1,1,2)
-        expected=[1 if t<0 else phi[t] for t in range(k-5,k+1)]
-        np.testing.assert_array_equal(u[0],np.asarray(expected,dtype=np.float32))
+    for k,(states,u) in enumerate(recorder.inputs[1:],start=1):
+        assert states.shape==(1,5,2) and not states[:,:4].any()
+        expected=[0 if t<0 else phi[t]-1 for t in range(k-4,k+1)]
+        np.testing.assert_allclose(u[0],expected,atol=1e-6)
     observed=Recorder()
     result=evaluate(observed,test_data,pod,scaler,tmp_path/'observed',
                     heat_release=False,initialization='observed_history')
     assert result['sine']['first_predicted_index']==5
     fields=np.load(metadata['cases'][-1]['data'])
-    np.testing.assert_allclose(observed.inputs[0][0][0],pod.encode(scaler.transform(fields[4:5])),atol=1e-6)
-    np.testing.assert_array_equal(observed.inputs[0][1][0],phi[:6])
-    validation=TrainingDataset(metadata,Nx=0,Ni=4,partition='validation')
-    latent=LatentDataset(validation,pod,scaler,tmp_path/'latent')
+    np.testing.assert_allclose(observed.inputs[0][0][0,-1],pod.encode(scaler.transform(fields[4:5]))[0],atol=1e-6)
+    np.testing.assert_allclose(observed.inputs[0][1][0],phi[1:6]-1,atol=1e-6)
+    validation=ForecasterDataset(metadata,'validation',Nx=0,Ni=4,blocks=10,scaler=scaler)
     recorder=Recorder()
-    validation_rollout(recorder,latent)
-    validation_phi=np.load(latent.paths[0][1])
-    np.testing.assert_array_equal(recorder.inputs[0][1][0],validation_phi[:6])
+    validation_rollout(recorder,pod,validation)
+    case,lo,_=validation.segments[0]
+    np.testing.assert_allclose(recorder.inputs[0][1][0],np.load(case['phi'])[lo+1:lo+6]-1,atol=1e-6)
 
 
 @pytest.mark.parametrize('Nx,Ni',[(-1,0),(0,-1),(1.5,0),(0,True)])
 def test_invalid_histories(metadata,Nx,Ni):
     with pytest.raises(ValueError,match='nonnegative integers'):
-        TrainingDataset(metadata,Nx=Nx,Ni=Ni)
-
-
-@pytest.mark.parametrize('Nx,Ni',[(0,0),(4,1),(1,5)])
-def test_forecaster_inputs_alignment(Nx,Ni):
-    from Baselines.Forecast.DL.networks import forecaster_inputs
-    history=torch.arange(2*(Nx+1)*3,dtype=torch.float32).reshape(2,Nx+1,3)
-    forcing=torch.arange(2*(Ni+2),dtype=torch.float32).reshape(2,Ni+2)+1
-    inputs=forecaster_inputs(history,forcing,Nx,Ni)
-    assert inputs.shape==(2,max(Nx,Ni)+2,6)
-    for index,time in enumerate(range(-max(Nx,Ni),2)):
-        if -Nx<=time<=0:
-            torch.testing.assert_close(inputs[:,index,:3],history[:,time+Nx])
-            assert (inputs[:,index,4]==1).all()
-        else:
-            assert (inputs[:,index,:3]==0).all()
-            assert (inputs[:,index,4]==0).all()
-        if time>=-Ni:
-            torch.testing.assert_close(inputs[:,index,3],forcing[:,time+Ni]-1)
-            assert (inputs[:,index,5]==1).all()
-        else:
-            assert (inputs[:,index,3]==0).all()
-            assert (inputs[:,index,5]==0).all()
-    # The target-time token contains only prescribed forcing, never a future state.
-    assert (inputs[:,-1,:3]==0).all()
-    assert (inputs[:,-1,4]==0).all()
-    torch.testing.assert_close(inputs[:,-1,3],forcing[:,-1]-1)
+        ForecasterDataset(metadata,'train',Nx=Nx,Ni=Ni)
 
 
 @pytest.mark.parametrize('cls',[GRU,LSTM,Transformer])
@@ -345,13 +329,14 @@ def test_forcing_enters_neural_core(cls,Nx,Ni):
     model=cls(rank=2,Nx=Nx,Ni=Ni,hidden=8,layers=1)
     network=model.network
     network.eval()
-    history=torch.randn(2,Nx+1,2)
-    forcing=torch.randn(2,Ni+2,requires_grad=True)
+    length=max(Nx,Ni)+1
+    states=torch.randn(2,length,2)
+    forcing=torch.randn(2,length,requires_grad=True)
     core_outputs=[]
     def capture_core(module,args,output):
         core_outputs.append(output if cls is Transformer else output[0])
     hook=network.core.register_forward_hook(capture_core)
-    prediction=network(history,forcing)
+    prediction=network(states,forcing)
     # Every supplied forcing value must affect the core, before the prediction head.
     core_gradient=torch.autograd.grad(core_outputs[0][:,-1,0].sum(),forcing,retain_graph=True)[0]
     assert torch.isfinite(core_gradient).all()
@@ -359,7 +344,7 @@ def test_forcing_enters_neural_core(cls,Nx,Ni):
     prediction.sum().backward()
     assert (forcing.grad.abs().sum(dim=0)>0).all()
     with torch.no_grad():
-        changed=network(history,forcing.detach()+0.5)
+        changed=network(states,forcing.detach()+0.5)
     assert not torch.allclose(prediction,changed)
     hook.remove()
 
@@ -388,7 +373,7 @@ def test_multi_seed_cli_layout(metadata,tmp_path,monkeypatch):
         assert (directory/'metrics.json').exists()
         assert (directory/'model.pkl').exists()
         records=[json.loads(line) for line in (directory/'metrics.jsonl').read_text().splitlines()]
-        assert any('validation/rollout_latent_mse' in row for row in records)
+        assert any('validation/rollout_field_mse' in row for row in records)
         assert any('test/sine/mean_nrmse' in row for row in records)
         assert list((directory/'tensorboard').glob('events.*'))
         assert not (directory/'evaluation').exists()
@@ -432,3 +417,107 @@ def test_wandb_seed_group_and_resume_id(tmp_path,monkeypatch):
     logger.close()
     assert init.call_args.kwargs['id']==first['id']
     assert init.call_args.kwargs['resume']=='allow'
+
+
+@pytest.mark.parametrize('images', [False, True])
+def test_pod_matches_legacy(metadata, tmp_path, images):
+    from legacy.models import PODReducer
+    from DataProcessing.process4convolution import ImageGrid
+    rng = np.random.default_rng(31)
+    grid = ImageGrid(np.array([[1, 0, 0], [0, 0, 2], [0, 0, 0], [1, 0, 1]]))
+    if images:
+        path = tmp_path / 'grid.npz'
+        grid.save(path)
+        metadata['grid_indices'] = str(path)
+    for case in metadata['cases']:
+        values = rng.normal(size=(81, 2, 4)).astype(np.float32)
+        np.save(case['data'], grid.images(values) if images else values)
+    raw = CompressorDataset(metadata, 'train')
+    scaler = FeatureScaler(raw.mask).fit(DataLoader(raw, batch_size=7))
+    dataset = CompressorDataset(metadata, 'train', scaler=scaler)
+    scaled = np.concatenate([x.numpy() for x in DataLoader(dataset, batch_size=11)])
+    vectors = grid.cells(scaled) if images else scaled
+    legacy = PODReducer(rank=3)
+    legacy.fit(vectors)
+    current = POD(rank=3, batch_size=7).fit(dataset)
+    np.testing.assert_allclose(current.mean, legacy.mean, atol=1e-6)
+    np.testing.assert_allclose(current.U_r, legacy.U_r, atol=1e-5)
+    expected_z = legacy.encode_torch(torch.from_numpy(vectors)).numpy()
+    np.testing.assert_allclose(current.encode(scaled), expected_z, atol=1e-5)
+    expected = legacy.decode_torch(torch.from_numpy(expected_z), vectors.shape[1:]).numpy()
+    decoded = current.decode(expected_z)
+    np.testing.assert_allclose(grid.cells(decoded) if images else decoded, expected, atol=1e-5)
+    if images:
+        assert not decoded[..., ~grid.mask].any()
+    other = POD(rank=3, batch_size=13).fit(dataset)
+    np.testing.assert_allclose(other.U_r, current.U_r, atol=1e-5)
+
+
+def test_unknown_config_keys_raise():
+    from Experiments.run import check_config
+    from Baselines.Forecast.DL.networks import GRU
+    from Baselines.Forecast.Classical.ARX import ARX
+    from Baselines.OrderReduction.DL.CAE import CAE
+    with pytest.raises(ValueError, match='batch_szie'):
+        check_config({'batch_szie': 3})
+    for build in (lambda: GRU(rank=2, hiden=8), lambda: ARX(aplha=1.0), lambda: CAE(chanels=2)):
+        with pytest.raises(TypeError):
+            build()
+
+
+def zero_increment_gru(**kwargs):
+    # Zero increments: the prediction stays at the last state, so step errors are known exactly.
+    model=GRU(rank=1,Nx=0,Ni=0,hidden=2,layers=1,rollout_steps=3,rollout_weight=0.5,**kwargs)
+    for p in model.network.head.parameters():
+        torch.nn.init.zeros_(p)
+    return model
+
+
+@pytest.mark.parametrize('loss,per_step',[('mse',[1,4,9]),('mae',[1,2,3]),
+                                          ('huber',[0.5,1.5,2.5]),('smooth_l1',[0.5,1.5,2.5])])
+def test_rollout_loss_combines_one_and_multi_step(loss,per_step):
+    model=zero_increment_gru(loss=loss)
+    target=torch.tensor([[[1.],[2.],[3.]]])
+    total,steps=model.rollout_loss(torch.zeros(1,1,1),torch.zeros(1,3),target,3)
+    np.testing.assert_allclose(steps.numpy(),per_step)
+    assert total.item()==pytest.approx(0.5*per_step[0]+0.5*np.mean(per_step))
+    assert not steps.requires_grad
+    with pytest.raises(ValueError,match='rollout'):
+        GRU(rank=1,rollout_steps=0)
+    with pytest.raises(ValueError,match='rollout'):
+        GRU(rank=1,rollout_weight=1.5)
+    with pytest.raises(ValueError,match='loss'):
+        GRU(rank=1,loss='l3')
+
+
+def test_detach_rollout_cuts_gradient_through_fed_back_predictions():
+    # Same weights, same loss value; only the gradient path through fed-back predictions differs.
+    values,gradients=[],[]
+    for detach in (False,True):
+        torch.manual_seed(0)
+        model=GRU(rank=1,Nx=1,Ni=0,hidden=2,layers=1,rollout_steps=3,detach_rollout=detach)
+        states,target=torch.randn(4,2,1),torch.randn(4,3,1)
+        total,_=model.rollout_loss(states,torch.zeros(4,4),target,3)
+        total.backward()
+        values.append(total.item())
+        gradients.append(torch.cat([p.grad.flatten() for p in model.network.parameters()]))
+    assert values[0]==pytest.approx(values[1])
+    assert not torch.allclose(*gradients)
+
+
+def test_validation_horizon_longer_than_training():
+    # Trained on 2-step rollouts, validated on 5-step rollouts.
+    torch.manual_seed(0)
+    class Logger:
+        def __init__(self):
+            self.rows=[]
+        def log(self,values,step):
+            self.rows.append(values)
+    train=DataLoader(windows(torch.randn(8,3,2),torch.zeros(8,4),torch.randn(8,2,2)),batch_size=4)
+    val=DataLoader(windows(torch.randn(8,3,2),torch.zeros(8,7),torch.randn(8,5,2)),batch_size=4)
+    logger=Logger()
+    GRU(rank=2,Nx=2,hidden=4,layers=1,epochs=1,rollout_steps=2).fit(train,val,logger=logger)
+    keys=[key for key in logger.rows[0] if key.startswith('validation/latent_step_')]
+    assert len(keys)==5
+    with pytest.raises(ValueError,match='rollout steps'):
+        GRU(rank=2,Nx=2,hidden=4,layers=1,epochs=1,rollout_steps=3).fit(train,val)

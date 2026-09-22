@@ -3,74 +3,65 @@ from torch import nn
 from .DLModel import DLModel
 
 
-def forecaster_inputs(history, forcing, Nx, Ni):
-    """Align states and forcing on times t-max(Nx,Ni), ..., t, t+1.
-
-    Channels: latent state, phi-1, state-present flag, forcing-present flag.
-    Missing values are zero-filled and flagged, never treated as observations.
-    """
-    if history.ndim != 3 or history.shape[1] != Nx + 1:
-        raise ValueError("Expected history shape (batch, Nx+1, rank)")
-    if forcing.shape != (history.shape[0], Ni + 2):
-        raise ValueError("Expected forcing shape (batch, Ni+2)")
-    batch, _, rank = history.shape
-    length = max(Nx, Ni) + 2
-    inputs = history.new_zeros(batch, length, rank + 3)
-    state_start = length - Nx - 2
-    forcing_start = length - Ni - 2
-    inputs[:, state_start:-1, :rank] = history
-    inputs[:, state_start:-1, rank + 1] = 1
-    inputs[:, forcing_start:, rank] = forcing - 1
-    inputs[:, forcing_start:, rank + 2] = 1
-    return inputs
-
-
 class RecurrentNetwork(nn.Module):
-    def __init__(self, rank, Nx=9, Ni=0, hidden=64, layers=2, kind="gru", **kwargs):
+    """GRU/LSTM over the rows [x(s), phi(s+1) - 1]; an MLP head maps the last state to the increment.
+
+    hidden: state size; layers: stacked recurrent layers; dropout: between recurrent layers
+    (ignored by torch when layers == 1).
+    """
+    def __init__(self, rank, hidden=64, layers=2, dropout=0.0, kind="gru"):
         super().__init__()
-        self.Nx, self.Ni = Nx, Ni
         cls = nn.GRU if kind == "gru" else nn.LSTM
-        self.core = cls(rank + 3, hidden, num_layers=layers, batch_first=True)
+        self.core = cls(rank + 1, hidden, num_layers=layers, dropout=dropout if layers > 1 else 0.0,
+                        batch_first=True)
         self.head = nn.Sequential(nn.Linear(hidden, hidden), nn.SiLU(), nn.Linear(hidden, rank))
 
-    def forward(self, history, forcing):
-        inputs = forecaster_inputs(history, forcing, self.Nx, self.Ni)
-        states, _ = self.core(inputs)
-        return history[:, -1] + self.head(states[:, -1])
+    def forward(self, states, forcing):
+        outputs, _ = self.core(torch.cat((states, forcing[..., None]), dim=-1))
+        return states[:, -1] + self.head(outputs[:, -1])
 
 
 class TransformerNetwork(nn.Module):
-    def __init__(self, rank, Nx=9, Ni=0, hidden=64, layers=2, heads=4, **kwargs):
+    """Transformer encoder over the rows [x(s), phi(s+1) - 1]; the last token predicts the increment.
+
+    length: number of rows, max(Nx, Ni) + 1; hidden: token size; layers: encoder layers; heads:
+    attention heads (must divide hidden); feedforward: MLP size inside each layer (default
+    4 * hidden); dropout: inside each layer.
+    """
+    def __init__(self, rank, length, hidden=64, layers=2, heads=4, feedforward=None, dropout=0.0):
         super().__init__()
-        self.Nx, self.Ni = Nx, Ni
-        self.embed = nn.Linear(rank + 3, hidden)
-        self.position = nn.Parameter(torch.zeros(1, max(Nx, Ni) + 2, hidden))
+        if hidden % heads:
+            raise ValueError("hidden must be divisible by heads")
+        self.embed = nn.Linear(rank + 1, hidden)
+        self.position = nn.Parameter(torch.zeros(1, length, hidden))
         nn.init.normal_(self.position, std=0.02)
-        layer = nn.TransformerEncoderLayer(hidden, heads, hidden * 4, dropout=0.0,
-                                            batch_first=True, activation="gelu")
-        self.core = nn.TransformerEncoder(layer, layers)
+        layer = nn.TransformerEncoderLayer(hidden, heads, feedforward or 4 * hidden, dropout=dropout,
+                                           batch_first=True, activation="gelu")
+        self.core = nn.TransformerEncoder(layer, layers, enable_nested_tensor=False)
         self.head = nn.Linear(hidden, rank)
 
-    def forward(self, history, forcing):
-        inputs = forecaster_inputs(history, forcing, self.Nx, self.Ni)
-        tokens = self.embed(inputs) + self.position
-        output = self.core(tokens)[:, -1]
-        return history[:, -1] + self.head(output)
+    def forward(self, states, forcing):
+        tokens = self.embed(torch.cat((states, forcing[..., None]), dim=-1)) + self.position
+        return states[:, -1] + self.head(self.core(tokens)[:, -1])
 
 
 class GRU(DLModel):
+    """training: DLModel keywords (device, lr, epochs, patience, frozen_epochs, rollout_*, loss)."""
     name = "gru"
-    def __init__(self, rank, **kwargs):
-        super().__init__(RecurrentNetwork(rank, kind="gru", **kwargs), **kwargs)
+    def __init__(self, rank, Nx=9, Ni=0, hidden=64, layers=2, dropout=0.0, **training):
+        super().__init__(RecurrentNetwork(rank, hidden, layers, dropout, "gru"), Nx, Ni, **training)
 
 
 class LSTM(DLModel):
     name = "lstm"
-    def __init__(self, rank, **kwargs):
-        super().__init__(RecurrentNetwork(rank, kind="lstm", **kwargs), **kwargs)
+    def __init__(self, rank, Nx=9, Ni=0, hidden=64, layers=2, dropout=0.0, **training):
+        super().__init__(RecurrentNetwork(rank, hidden, layers, dropout, "lstm"), Nx, Ni, **training)
 
 
 class Transformer(DLModel):
     name = "transformer"
-    def __init__(self, rank, Nx=9, **kwargs):
-        super().__init__(TransformerNetwork(rank, Nx=Nx, **kwargs), **kwargs)
+    hyperparams = {**DLModel.hyperparams, "heads": {"type": "categorical", "choices": [2, 4, 8]}}
+
+    def __init__(self, rank, Nx=9, Ni=0, hidden=64, layers=2, heads=4, feedforward=None, dropout=0.0, **training):
+        network = TransformerNetwork(rank, max(Nx, Ni) + 1, hidden, layers, heads, feedforward, dropout)
+        super().__init__(network, Nx, Ni, **training)

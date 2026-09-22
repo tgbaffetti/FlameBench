@@ -1,6 +1,7 @@
 """Centered randomized POD using the legacy PODReducer algorithm."""
 import numpy as np
 from sklearn.utils.extmath import randomized_svd
+from torch.utils.data import DataLoader
 from ..Compressor import Compressor
 
 
@@ -8,7 +9,7 @@ class POD(Compressor):
     """Legacy randomized SVD, fitted on the full training matrix in memory.
 
     Image inputs are gathered into original cell order before decomposition.
-    Scaling remains external and shared with the other benchmark compressors.
+    Frames arrive scaled from the dataset, with the scaler shared by all compressors.
     """
     name = "pod"
 
@@ -23,13 +24,11 @@ class POD(Compressor):
             frames = frames[..., rows, columns]
         return frames.reshape(len(frames), -1)
 
-    def fit(self, dataset, scaler, **kwargs):
+    def fit(self, dataset, **kwargs):
         self.shape = tuple(dataset.field_shape)
         self.grid_indices = dataset.grid_indices
-        snapshots = np.concatenate([
-            self.vectors(scaler.transform(frames))
-            for frames in dataset.snapshot_batches(self.batch_size)
-        ])
+        snapshots = np.concatenate([self.vectors(frames.numpy())
+                                    for frames in DataLoader(dataset, batch_size=self.batch_size)])
         X = snapshots.T
         self.mean = X.mean(axis=1, keepdims=True)
         X_c = X - self.mean

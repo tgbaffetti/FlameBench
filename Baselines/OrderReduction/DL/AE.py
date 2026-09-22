@@ -3,6 +3,7 @@ from abc import abstractmethod
 import numpy as np
 import torch
 from torch import nn
+from torch.utils.data import DataLoader
 from Baselines.losses import error_function
 from ..Compressor import Compressor
 
@@ -31,7 +32,7 @@ class AE(Compressor):
     def build(self):
         """Create self.encoder and self.decoder for self.shape."""
 
-    def fit(self, dataset, scaler, validation=None, logger=None, **kwargs):
+    def fit(self, dataset, validation=None, logger=None, **kwargs):
         if validation is None:
             raise ValueError(f"{type(self).__name__} requires a validation dataset")
         self.shape = tuple(dataset.field_shape)
@@ -48,8 +49,8 @@ class AE(Compressor):
             self.encoder.train()
             self.decoder.train()
             total = count = 0
-            for raw in dataset.snapshot_batches(self.batch_size, shuffle=True):
-                x = torch.as_tensor(scaler.transform(raw), device=self.device)
+            for x in DataLoader(dataset, batch_size=self.batch_size, shuffle=True):
+                x = x.to(self.device)
                 encoded = self.encoder(x)
                 if self.beta:
                     mu, logvar = encoded.chunk(2, dim=-1)
@@ -69,8 +70,8 @@ class AE(Compressor):
                 total += loss.item() * len(x)
                 count += len(x)
             sse = n = 0
-            for raw in validation.snapshot_batches(self.batch_size):
-                x = scaler.transform(raw)
+            for x in DataLoader(validation, batch_size=self.batch_size):
+                x = x.numpy()
                 difference = (self.decode(self.encode(x)) - x)[..., validation.mask]
                 sse += float(np.square(difference).sum())
                 n += difference.size

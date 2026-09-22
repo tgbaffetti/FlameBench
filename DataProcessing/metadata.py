@@ -18,7 +18,7 @@ def load_metadata(path):
         names.add(case["name"])
         for key in ("data", "phi"):
             case[key] = str((path.parent / case[key]).resolve())
-    for key in ("cell_volumes", "coordinates", "grid_indices"):
+    for key in ("cell_volumes", "coordinates", "grid_indices", "grid"):
         if result.get(key):
             result[key] = str((path.parent / result[key]).resolve())
     return result
