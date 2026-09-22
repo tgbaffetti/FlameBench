@@ -1,4 +1,5 @@
 import numpy as np
+from tqdm.auto import tqdm
 from ..Model import Model
 
 
@@ -26,7 +27,7 @@ class ARX(Model):
 
     def fit(self, training, validation=None, **kwargs):
         gram = rhs = None
-        for batch in training:
+        for batch in tqdm(training, desc=f"{type(self).__name__} fit"):
             states, target = np.asarray(batch["states"]), np.asarray(batch["target"])
             if target.shape[1] != 1:
                 raise ValueError("ARX fits one-step targets; use horizon=1")

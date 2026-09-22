@@ -1,5 +1,6 @@
 """Streaming per-field statistics of training images, over valid pixels only."""
 import numpy as np
+from tqdm.auto import tqdm
 
 
 class FeatureScaler:
@@ -8,7 +9,7 @@ class FeatureScaler:
 
     def fit(self, batches):
         count, mean, m2 = 0, None, None
-        for x in batches:
+        for x in tqdm(batches, desc="Scaler fit"):
             x = np.asarray(x, dtype=np.float64)
             if not np.isfinite(x).all():
                 raise ValueError("Nonfinite training data")

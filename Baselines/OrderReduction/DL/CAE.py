@@ -4,7 +4,8 @@ Each encoder level is Conv2d(kernel_size, stride, padding) + SiLU. The decoder r
 in reverse with ConvTranspose2d and the same kernel_size, stride and padding. A convolution
 rounds down, out = (size + 2 * padding - kernel_size) // stride + 1, so each transposed
 convolution gets output_padding = the remainder of that division, which restores the exact
-input size. A linear layer maps the last feature map to the latent and back.
+input size. The default padding 0 is valid padding: no zeros are added at the image border.
+A linear layer maps the last feature map to the latent and back.
 """
 from torch import nn
 from .AE import AE
@@ -27,7 +28,7 @@ class CAE(AE):
             hyperparameters["channels"] = [base * 2 ** level for level in range(levels)]
         return cls(**context, **hyperparameters)
 
-    def __init__(self, channels=(16, 32, 64), kernel_size=3, stride=2, padding=1, **kwargs):
+    def __init__(self, channels=(16, 32, 64), kernel_size=3, stride=2, padding=0, **kwargs):
         super().__init__(**kwargs)
         if not channels or min(channels) < 1:
             raise ValueError("channels must be a nonempty list of positive widths, one per level")

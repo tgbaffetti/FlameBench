@@ -170,6 +170,7 @@ def main():
     parser.add_argument("command", choices=["fit", "test", "run", "hpo"])
     parser.add_argument("--config", required=True)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--metadata", help="Dataset metadata.json, replacing the config value")
     parser.add_argument("--device")
     parser.add_argument("--output", help="Results root directory")
     parser.add_argument("--run-name", help="Shared model/timestamp folder; required for test or resume")
@@ -178,7 +179,7 @@ def main():
     seeds.add_argument("--seeds", type=int, nargs="+")
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text())
-    for key in ("device", "output", "run_name"):
+    for key in ("metadata", "device", "output", "run_name"):
         if getattr(args, key) is not None:
             config[key] = getattr(args, key)
     if not config.get("run_name"):

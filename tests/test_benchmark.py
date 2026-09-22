@@ -362,7 +362,9 @@ def test_forcing_enters_neural_core(cls,Nx,Ni):
     hook=network.layers[-3].register_forward_hook(capture_core)
     prediction=network(states,forcing)
     # Every supplied forcing value must affect the core, before the prediction head.
-    core_gradient=torch.autograd.grad(core_outputs[0][:,-1,0].sum(),forcing,retain_graph=True)[0]
+    # Random weights: a plain sum of layer-normalized features is constant.
+    core=core_outputs[0]
+    core_gradient=torch.autograd.grad((core*torch.randn_like(core)).sum(),forcing,retain_graph=True)[0]
     assert torch.isfinite(core_gradient).all()
     assert (core_gradient.abs().sum(dim=0)>0).all()
     prediction.sum().backward()

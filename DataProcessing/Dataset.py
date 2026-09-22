@@ -41,13 +41,29 @@ def keep_recent(rows, count):
     return rows
 
 
+LOADED = {}  # path -> array read fully into memory, shared by every dataset of the process
+
+
+def load(path, in_memory):
+    """Memory map of a .npy file, or with in_memory the whole array, read once per process."""
+    if not in_memory:
+        return np.load(path, mmap_mode="r", allow_pickle=False)
+    if path not in LOADED:
+        LOADED[path] = np.load(path, allow_pickle=False)
+    return LOADED[path]
+
+
 class Dataset(TorchDataset):
     """Frames of one partition, read lazily from memory-mapped trajectories.
+
+    Set Dataset.in_memory = True to read each trajectory into memory once instead; every later
+    dataset reuses it. This needs RAM for all the images (about 18 GB) but avoids slow disks.
 
     hyperparameters_ranges is the Optuna search space of the constructor keywords; build creates
     a dataset from them, with context holding the values that are never tuned.
     """
     hyperparameters_ranges = {}
+    in_memory = False
 
     @classmethod
     def build(cls, hyperparameters, **context):
@@ -84,8 +100,7 @@ class Dataset(TorchDataset):
     def arrays(self, case):
         name = case["name"]
         if name not in self._maps:
-            self._maps[name] = (np.load(case["data"], mmap_mode="r", allow_pickle=False),
-                                np.load(case["phi"], mmap_mode="r", allow_pickle=False))
+            self._maps[name] = (load(case["data"], self.in_memory), load(case["phi"], self.in_memory))
         return self._maps[name]
 
     def frames(self, case, start, stop):

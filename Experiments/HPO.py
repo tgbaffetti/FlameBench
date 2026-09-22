@@ -14,6 +14,7 @@ Errors are on scaled fields, valid pixels only. Each stage runs config["trials"]
 2), or one fit when it has nothing to tune. Diverged trials are skipped.
 """
 import copy
+import warnings
 import numpy as np
 import optuna
 from Baselines.OrderReduction.DL.AE import AE
@@ -21,6 +22,11 @@ from Baselines.Forecast.DL.DLModel import DLModel
 from DataProcessing.Dataset import ForecasterDataset
 from utils import seed_everything
 from .pipeline import Pipeline
+
+
+# Layer lists (e.g. GRU hiddens) are categorical choices; Optuna warns because a saved study
+# could not store them, but studies here stay in memory.
+warnings.filterwarnings("ignore", message="Choices for a categorical distribution")
 
 
 def sample(trial, ranges, fixed, prefix):
@@ -59,7 +65,7 @@ def minimize(train, trials, seed):
         return error
 
     study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed))
-    study.optimize(objective, n_trials=trials, catch=(FloatingPointError,))
+    study.optimize(objective, n_trials=trials, catch=(FloatingPointError,), show_progress_bar=True)
     if "values" not in best:
         raise RuntimeError("Every trial diverged")
     return best["values"], best["fitted"]

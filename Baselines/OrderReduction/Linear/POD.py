@@ -2,6 +2,7 @@
 import numpy as np
 from sklearn.utils.extmath import randomized_svd
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 from ..Compressor import Compressor
 
 
@@ -27,7 +28,7 @@ class POD(Compressor):
         self.shape = tuple(dataset.field_shape)
         self.grid_indices = dataset.grid_indices
         snapshots = np.concatenate([self.vectors(frames.numpy())
-                                    for frames in DataLoader(dataset, batch_size=self.batch_size)])
+                                    for frames in tqdm(DataLoader(dataset, batch_size=self.batch_size), desc="POD snapshots")])
         X = snapshots.T
         self.mean = X.mean(axis=1, keepdims=True)
         X_c = X - self.mean

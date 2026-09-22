@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
+from tqdm.auto import tqdm
 from Baselines.losses import error_function
 from DataProcessing.Dataset import keep_recent
 from ..Model import Model
@@ -66,10 +67,11 @@ class DLModel(Model):
                 torch.cuda.set_rng_state_all([s.cpu() for s in state["cuda_rng"]])
             if stale >= self.patience:
                 start = self.epochs  # Early stopping already triggered; do not train further.
-        for epoch in range(start, self.epochs):
+        epochs = tqdm(range(start, self.epochs), desc=f"{type(self).__name__} fit")
+        for epoch in epochs:
             self.network.train()
             total = count = 0
-            for batch in training:
+            for batch in tqdm(training, desc="training", leave=False):
                 optimizer.zero_grad(set_to_none=True)
                 loss, _ = self.rollout_loss(*self.tensors(batch))
                 if not torch.isfinite(loss):
@@ -83,7 +85,7 @@ class DLModel(Model):
             val_total = val_count = 0
             val_steps = 0
             with torch.no_grad():
-                for batch in validation:
+                for batch in tqdm(validation, desc="validation", leave=False):
                     loss, steps = self.rollout_loss(*self.tensors(batch))
                     val_total += loss.item() * len(batch["target"])
                     val_steps += steps.cpu() * len(batch["target"])
@@ -96,6 +98,7 @@ class DLModel(Model):
                 best_state = {k: v.detach().cpu().clone() for k, v in self.network.state_dict().items()}
             else:
                 stale += 1
+            epochs.set_postfix(train=total / count, validation=value)
             if logger:
                 logger.log({"train/latent_loss": total/count, "validation/latent_loss": value,
                             **self.step_errors("validation/latent", val_steps / val_count)}, epoch)
@@ -128,11 +131,12 @@ class DLModel(Model):
         optimizer = self.make_optimizer(parameters, self.joint_lr)
         mask = torch.as_tensor(training.dataset.mask, device=self.device)
         best, stale, best_state = float("inf"), 0, None
-        for epoch in range(self.joint_epochs):
+        epochs = tqdm(range(self.joint_epochs), desc=f"{type(self).__name__} joint fit")
+        for epoch in epochs:
             for module in modules:
                 module.train()
             total = count = 0
-            for batch in training:
+            for batch in tqdm(training, desc="training", leave=False):
                 loss, _ = self.joint_loss(compressor, batch, mask)
                 if not torch.isfinite(loss):
                     raise FloatingPointError("Nonfinite joint training loss")
@@ -147,7 +151,7 @@ class DLModel(Model):
             val_total = val_count = 0
             val_steps = 0
             with torch.no_grad():
-                for batch in validation:
+                for batch in tqdm(validation, desc="validation", leave=False):
                     loss, steps = self.joint_loss(compressor, batch, mask)
                     val_total += loss.item() * len(batch["target"])
                     val_steps += steps.cpu() * len(batch["target"])
@@ -161,6 +165,7 @@ class DLModel(Model):
                               for module in modules]
             else:
                 stale += 1
+            epochs.set_postfix(train=total / count, validation=value)
             if logger:
                 logger.log({"joint/train_field_loss": total/count, "joint/validation_field_loss": value,
                             **self.step_errors("joint/validation_field", val_steps / val_count)}, epoch)

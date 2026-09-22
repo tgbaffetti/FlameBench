@@ -62,9 +62,9 @@ def test_image_pipeline_metrics(tmp_path, kind):
     split = dict(validation_fraction=0.5, blocks=2, scaler=scaler)
     compressors = {
         'pod': POD(rank=1, batch_size=3),
-        'cae': CAE(rank=1, channels=(2, 4), epochs=1, batch_size=3),
-        'cvae': CAE(rank=1, channels=(2, 4), epochs=1, batch_size=3, beta=1e-4),
-        'vit_ae': ViTAE(rank=1, channels=(2, 4), hidden=8, heads=2, layers=1, epochs=1, batch_size=3),
+        'cae': CAE(rank=1, channels=(2, 4), padding=1, epochs=1, batch_size=3),
+        'cvae': CAE(rank=1, channels=(2, 4), padding=1, epochs=1, batch_size=3, beta=1e-4),
+        'vit_ae': ViTAE(rank=1, channels=(2, 4), padding=1, hidden=8, heads=2, layers=1, epochs=1, batch_size=3),
     }
     compressor = compressors[kind]
     compressor.fit(CompressorDataset(metadata, 'train', **split), validation=CompressorDataset(metadata, 'validation', **split))
@@ -87,7 +87,7 @@ def test_image_pipeline_metrics(tmp_path, kind):
     np.testing.assert_allclose(q['reference'], 34)
 
 
-@pytest.mark.parametrize('compressor', [CAE(rank=3, channels=(2, 4)), ViTAE(rank=3, channels=(2, 4), hidden=8, heads=2, layers=1)])
+@pytest.mark.parametrize('compressor', [CAE(rank=3, channels=(2, 4), padding=1), ViTAE(rank=3, channels=(2, 4), padding=1, hidden=8, heads=2, layers=1)])
 def test_image_compressor_padding_and_checkpoint(compressor, tmp_path):
     import pickle
     import torch
@@ -131,7 +131,7 @@ def test_joint_training_updates_compressor(tmp_path):
     from Experiments.run import fit, test
     config = {'metadata': str(image_metadata(tmp_path)), 'output': str(tmp_path / 'runs'), 'run_name': 'cae_gru',
               'validation_fraction': 0.5, 'blocks': 2, 'K_eval': 3, 'batch_size': 4, 'joint_batch_size': 2,
-              'compressor': {'name': 'cae', 'rank': 2, 'channels': [2, 4], 'epochs': 1, 'batch_size': 4},
+              'compressor': {'name': 'cae', 'rank': 2, 'channels': [2, 4], 'padding': 1, 'epochs': 1, 'batch_size': 4},
               'dataset': {'Nx': 1, 'Ni': 0, 'horizon': 3},
               'forecaster': {'name': 'gru', 'hiddens': [4], 'epochs': 1, 'joint_epochs': 2, 'patience': 5},
               'logging': {'wandb': {'mode': 'disabled'}}, 'evaluation': {'heat_release': False}}
@@ -151,7 +151,7 @@ def hpo_config(tmp_path):
     # Small fixed values keep the tiny images and 8-frame segments valid; the rest is tuned.
     return {'metadata': str(image_metadata(tmp_path)), 'validation_fraction': 0.5, 'blocks': 2, 'K_eval': 3,
             'batch_size': 4, 'joint_batch_size': 2, 'trials': 2,
-            'compressor': {'rank': 2, 'epochs': 1, 'levels': 1, 'base_channels': 2, 'kernel_size': 3},
+            'compressor': {'rank': 2, 'epochs': 1, 'levels': 1, 'base_channels': 2, 'kernel_size': 3, 'padding': 1},
             'dataset': {'Nx': 1, 'Ni': 0, 'horizon': 3},
             'forecaster': {'hiddens': [4], 'epochs': 1, 'patience': 5}}
 
@@ -178,7 +178,7 @@ def test_hpo_with_trained_compressor(tmp_path, fine_tune):
     raw = CompressorDataset(metadata, 'train', validation_fraction=0.5, blocks=2)
     scaler = FeatureScaler(raw.mask).fit(DataLoader(raw, batch_size=4))
     split = dict(validation_fraction=0.5, blocks=2, scaler=scaler)
-    compressor = CAE(rank=2, channels=(2,), epochs=1, batch_size=4).fit(
+    compressor = CAE(rank=2, channels=(2,), padding=1, epochs=1, batch_size=4).fit(
         CompressorDataset(metadata, 'train', **split), validation=CompressorDataset(metadata, 'validation', **split))
     best = optimize(config, forecaster_class=GRU, compressor=compressor, fine_tune_compressor=fine_tune)
     assert 'compressor' not in best
@@ -196,7 +196,7 @@ def test_compressor_loss_option_multiple_epochs(tmp_path, loss):
     scaler = FeatureScaler(raw.mask).fit(DataLoader(raw, batch_size=4))
     split = dict(validation_fraction=0.5, blocks=2, scaler=scaler)
     training = CompressorDataset(metadata, 'train', **split)
-    compressor = CAE(rank=1, epochs=2, batch_size=4, loss=loss, beta=1e-4).fit(
+    compressor = CAE(rank=1, padding=1, epochs=2, batch_size=4, loss=loss, beta=1e-4).fit(
         training, validation=CompressorDataset(metadata, 'validation', **split))
     assert np.isfinite(compressor.encode(np.stack([training[0].numpy(), training[1].numpy()]))).all()
     with pytest.raises(ValueError, match='loss'):
@@ -221,7 +221,7 @@ def test_cae_shapes_any_depth(shape, channels, kernel_size, stride, padding):
 
 @pytest.mark.parametrize('shape', [(11, 206, 104), (2, 7, 5)])
 def test_vit_shapes(shape):
-    compressor = ViTAE(rank=3, channels=(2, 4), hidden=8, heads=2, layers=1)
+    compressor = ViTAE(rank=3, channels=(2, 4), padding=1, hidden=8, heads=2, layers=1)
     compressor.shape = shape
     compressor.build_networks()
     assert compressor.encoder(torch.zeros(2, *shape)).shape == (2, 3)

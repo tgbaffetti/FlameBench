@@ -4,6 +4,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 from Baselines.losses import error_function
 from ..Compressor import Compressor
 
@@ -46,11 +47,12 @@ class AE(Compressor):
         optimizer = torch.optim.AdamW(parameters, lr=self.lr)
         error = error_function(self.loss)
         best, best_state = float("inf"), None
-        for epoch in range(self.epochs):
+        epochs = tqdm(range(self.epochs), desc=f"{type(self).__name__} fit")
+        for epoch in epochs:
             self.encoder.train()
             self.decoder.train()
             total = count = 0
-            for x in DataLoader(dataset, batch_size=self.batch_size, shuffle=True):
+            for x in tqdm(DataLoader(dataset, batch_size=self.batch_size, shuffle=True), desc="training", leave=False):
                 x = x.to(self.device)
                 encoded = self.encoder(x)
                 if self.beta:
@@ -71,7 +73,7 @@ class AE(Compressor):
                 total += loss.item() * len(x)
                 count += len(x)
             sse = n = 0
-            for x in DataLoader(validation, batch_size=self.batch_size):
+            for x in tqdm(DataLoader(validation, batch_size=self.batch_size), desc="validation", leave=False):
                 x = x.numpy()
                 difference = (self.decode(self.encode(x)) - x)[..., validation.mask]
                 sse += float(np.square(difference).sum())
@@ -83,6 +85,7 @@ class AE(Compressor):
                 best = value
                 best_state = [{k: v.detach().cpu().clone() for k, v in module.state_dict().items()}
                               for module in (self.encoder, self.decoder)]
+            epochs.set_postfix(train=total / count, validation=value)
             if logger:
                 logger.log({"compressor/train_loss": total/count, "compressor/validation_mse": value}, epoch)
         if best_state is None:

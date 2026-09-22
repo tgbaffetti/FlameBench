@@ -55,7 +55,8 @@ class ViTAE(CAE):
     in both encoder and decoder; feedforward: MLP size inside each layer (default 4 * hidden).
     The convolution keys (channels, kernel_size, stride, padding) are those of CAE."""
     name = "vit_ae"
-    # At least 3 levels: fewer leave thousands of tokens (103 x 52 after one level), too many for attention.
+    # At least 3 levels: fewer leave over a thousand tokens (50 x 25 after two levels of kernel 3,
+    # stride 2), too many for attention; three levels leave 24 x 12.
     hyperparameters_ranges = {**CAE.hyperparameters_ranges,
                               "levels": {"type": "int", "low": 3, "high": 4},
                               "hidden": {"type": "categorical", "choices": [32, 64, 128]},

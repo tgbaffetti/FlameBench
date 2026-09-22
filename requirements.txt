@@ -8,6 +8,7 @@ wandb>=0.18,<1
 optuna>=4,<6
 python-dotenv>=1,<2
 pyvista>=0.46,<1
+tqdm>=4.66,<5
 
 # Tests and the walkthrough notebook
 pytest>=8

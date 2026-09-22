@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 from DataProcessing.Dataset import keep_recent
 from .metrics import FieldMetrics, relative_l2, gain_phase
 from utils import write_json
@@ -23,7 +24,7 @@ def forcing_window(phi, target, length, Ni):
 def reconstruction_error(compressor, dataset, batch_size=16):
     """MSE of encode-decode on a scaled CompressorDataset, valid pixels only."""
     sse = count = 0
-    for frames in DataLoader(dataset, batch_size=batch_size):
+    for frames in tqdm(DataLoader(dataset, batch_size=batch_size), desc="Reconstruction error"):
         frames = frames.numpy()
         error = (compressor.decode(compressor.encode(frames)) - frames)[..., dataset.mask]
         sse += float(np.square(error, dtype=np.float64).sum())
@@ -41,7 +42,7 @@ def validation_error(forecaster, compressor, dataset, batch_size=16):
     """
     sse = count = 0
     latent_dataset = getattr(dataset, "latents", None) is not None
-    for batch_index, batch in enumerate(DataLoader(dataset, batch_size=batch_size)):
+    for batch_index, batch in enumerate(tqdm(DataLoader(dataset, batch_size=batch_size), desc="Validation error")):
         frames, forcing, target = (batch[key].numpy() for key in ("states", "forcing", "target"))
         size, length = frames.shape[:2]
         if latent_dataset:
@@ -109,7 +110,7 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
         if save_predictions:
             output = np.lib.format.open_memmap(directory / f"{case['name']}_predictions.npy", mode="w+",
                        dtype="float32", shape=(hi-first, *dataset.field_shape))
-        for k in range(first, hi):
+        for k in tqdm(range(first, hi), desc=f"Test {case['name']}"):
             forcing = forcing_window(phi, k, length, dataset.Ni)
             synchronize(model)
             begin = time.perf_counter()
