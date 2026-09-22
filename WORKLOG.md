@@ -302,8 +302,20 @@ Consolidated findings (POD pass; CAE/VAE pass pending Carlo):
    (rejects k=4 at 2.6e61), but **wrong for Transformer** (picks k=8; k=32 is better on test).
 - Running: NARX cross_alpha sweep (CPU); seeds 43/44 for pod_lstm_k32, pod_transformer_k32
   (GPU0) and identity_deeponet_k16 (GPU1).
-- NB: LSTM/Transformer k=1 windowed-val scores were computed by replaying cached latents after
-  the fact; verify they are comparable with the k>1 runs before putting them in a paper table.
+- Protocol-C selection table complete (validation rollout, window=500; k=1 runs re-scored by
+  replaying the pickled model on the same cached validation latents, so the same code path and
+  data produce every number — they are comparable):
+
+| model | k=1 | k=2 | k=4 | k=8 | k=16 | k=32 | picks | best on test? |
+|---|---|---|---|---|---|---|---|---|
+| POD+LSTM | 3828 | 2467 | -- | 2611 | -- | **2406** | k=32 | yes (AR 0.365) |
+| POD+Transformer | 1173 | 1062 | -- | **1016** | -- | 1192 | k=8 | **no** (k=32 is 0.335 vs 0.391) |
+| DeepONet | 0.341 | -- | 2.6e61 | -- | **0.109** | -- | k=16 | yes (AR 0.318) |
+| Transolver | 2.01 | -- | 219 | -- | **0.067** | -- | k=16 | yes (AR 0.519) |
+
+  Selection is right in 3 of 4 families and decisively rejects the catastrophic k=4 operator
+  runs; it inverts only for Transformer, where the three k's are within 15% of each other on
+  validation and 15% on test — i.e. it fails where the choice barely matters.
 
 
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
