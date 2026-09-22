@@ -12,6 +12,7 @@ feature-normalized; without one (to fit the scaler) they are raw.
 """
 from bisect import bisect_right
 import numpy as np
+from tqdm import tqdm
 import torch
 from torch.utils.data import Dataset as TorchDataset
 
@@ -111,6 +112,7 @@ class Dataset(TorchDataset):
     def __getstate__(self):
         state = self.__dict__.copy()
         state["_maps"] = {}
+        state["in_memory"] = False  # Spawned workers mmap files instead of loading whole trajectories.
         return state
 
 
@@ -168,7 +170,7 @@ class ForecasterDataset(Dataset):
         self.latents = None
         if compressor is not None:
             self.latents = [np.concatenate([compressor.encode(self.frames(case, begin, min(begin + batch_size, stop)))
-                                            for begin in range(start, stop, batch_size)])
+                                            for begin in tqdm(range(start, stop, batch_size), desc=f"Encoding {case['name']}")])
                             for case, start, stop in self.segments]
 
     def states(self, segment, start, stop):

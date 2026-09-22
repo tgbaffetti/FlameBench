@@ -31,7 +31,7 @@ FORECASTERS = {"arx": ARX, "constant": Constant, "gru": GRU, "lstm": LSTM, "cnn"
 
 
 CONFIG_KEYS = {"metadata", "output", "run_name", "seed", "device", "cpu_threads", "validation_fraction", "blocks",
-               "batch_size", "joint_batch_size", "workers", "preprocessing_batch_size", "K_eval", "trials",
+               "batch_size", "joint_batch_size", "workers", "dataloader", "preprocessing_batch_size", "K_eval", "trials",
                "compressor", "dataset", "forecaster", "logging", "evaluation"}
 
 

@@ -3,8 +3,8 @@ import time
 from pathlib import Path
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
-from tqdm.auto import tqdm
+from tqdm import tqdm
+from DataProcessing.loading import make_loader
 from DataProcessing.Dataset import keep_recent
 from .metrics import FieldMetrics, relative_l2, gain_phase
 from utils import write_json
@@ -21,10 +21,10 @@ def forcing_window(phi, target, length, Ni):
     return keep_recent(values[None], Ni + 1)
 
 
-def reconstruction_error(compressor, dataset, batch_size=16):
+def reconstruction_error(compressor, dataset, batch_size=16, loader_options=None):
     """MSE of encode-decode on a scaled CompressorDataset, valid pixels only."""
     sse = count = 0
-    for frames in tqdm(DataLoader(dataset, batch_size=batch_size), desc="Reconstruction error"):
+    for frames in tqdm(make_loader(dataset, batch_size, **(loader_options or {})), desc="Reconstruction error"):
         frames = frames.numpy()
         error = (compressor.decode(compressor.encode(frames)) - frames)[..., dataset.mask]
         sse += float(np.square(error, dtype=np.float64).sum())
@@ -32,7 +32,7 @@ def reconstruction_error(compressor, dataset, batch_size=16):
     return sse / count
 
 
-def validation_error(forecaster, compressor, dataset, batch_size=16):
+def validation_error(forecaster, compressor, dataset, batch_size=16, loader_options=None):
     """MSE of recursive forecasts on a scaled image ForecasterDataset, valid pixels only.
 
     Image windows are encoded before rollout. Latent windows from a compressed ForecasterDataset
@@ -42,7 +42,8 @@ def validation_error(forecaster, compressor, dataset, batch_size=16):
     """
     sse = count = 0
     latent_dataset = getattr(dataset, "latents", None) is not None
-    for batch_index, batch in enumerate(tqdm(DataLoader(dataset, batch_size=batch_size), desc="Validation error")):
+    loader = make_loader(dataset, batch_size, **(loader_options or {}))
+    for batch_index, batch in enumerate(tqdm(loader, desc="Validation error")):
         frames, forcing, target = (batch[key].numpy() for key in ("states", "forcing", "target"))
         size, length = frames.shape[:2]
         if latent_dataset:

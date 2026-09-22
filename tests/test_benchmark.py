@@ -239,7 +239,11 @@ def test_walkthrough_notebook(metadata,tmp_path,monkeypatch):
               if c['cell_type']=='markdown' and ''.join(c['source']).startswith('## ')]
     assert headings==['## 1. Data preparation','## 2. Datasets','## 3. POD-ARX','## 4. POD-LSTM','## 5. CAE-ARX',
                       '## 6. HPO of POD-ARX','## 7. Results']
+    # The notebook uses CAE's default 4x4 kernel; give this tiny fixture a valid image size.
+    notebook_grid = ImageGrid(np.array([[x, 0, z] for z in range(8) for x in range(8)]))
+    notebook_grid.save(metadata['grid_indices'])
     for case in metadata['cases']:
+        np.save(case['data'], notebook_grid.images(np.tile(GRID.cells(np.load(case['data'])), (1, 1, 16))))
         case['source_data']=case['name']+'.npz'
         case['source_phi']='phi_'+case['name']+'.npz'
     metadata_path=tmp_path/'metadata.json'
@@ -257,6 +261,7 @@ def test_walkthrough_notebook(metadata,tmp_path,monkeypatch):
             namespace.update(metadata_path=metadata_path,raw_directory=tmp_path/'Raw',
                              Nx=2,Ni=4,horizon=2,K_eval=3,rank=2,batch_size=8,blocks=10,
                              lstm_epochs=1,cae_epochs=1,cae_channels=[2],hpo_fixed_dataset={'Nx':2,'Ni':4},
+                             loader_options={'num_workers': 0},
                              logging_config={'logging':{'wandb':{'mode':'disabled'}}})
             first=False
     # This is a notebook execution check, not a claim about accuracy.
@@ -535,3 +540,71 @@ def test_validation_horizon_longer_than_training():
     small(GRU,2,Nx=2,epochs=1).fit(train,val,logger=logger)
     keys=[key for key in logger.rows[0] if key.startswith('validation/latent_step_')]
     assert len(keys)==5
+
+
+def test_configurable_loader_preserves_frames_and_reuses_workers(metadata, monkeypatch):
+    from DataProcessing.Dataset import Dataset
+    from DataProcessing.loading import make_loader
+    from Experiments.pipeline import Pipeline
+
+    monkeypatch.setattr(Dataset, 'in_memory', True)
+    dataset = CompressorDataset(metadata, 'train')
+    options = dict(num_workers=2, persistent_workers=True, prefetch_factor=1,
+                   pin_memory=False, multiprocessing_context='spawn')
+    pipeline = Pipeline({'dataloader': options}, metadata)
+    loader = pipeline.loader(dataset, batch_size=7)
+    assert dataset.__getstate__()['in_memory'] is False
+    expected = torch.stack([dataset[i] for i in range(len(dataset))])
+    first = torch.cat(list(loader))
+    pids = [worker.pid for worker in loader._iterator._workers]
+    second = torch.cat(list(loader))
+    assert [worker.pid for worker in loader._iterator._workers] == pids
+    torch.testing.assert_close(first, expected, rtol=0, atol=0)
+    torch.testing.assert_close(second, expected, rtol=0, atol=0)
+    single = make_loader(dataset, batch_size=7, **{**options, 'num_workers': 0})
+    assert single.prefetch_factor is None and not single.persistent_workers
+    torch.testing.assert_close(torch.cat(list(single)), expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize('device', ['cpu', pytest.param('cuda', marks=pytest.mark.skipif(
+    not torch.cuda.is_available(), reason='CUDA unavailable'))])
+def test_torch_pod_reconstruction_and_rng(metadata, tmp_path, device):
+    import pickle
+    rng = np.random.default_rng(6)
+    grid = ImageGrid(np.array([[i, 0, 0] for i in range(32)]))
+    grid.save(tmp_path / 'grid.npz')
+    basis = rng.normal(size=(3, 64))
+    for case in metadata['cases']:
+        vectors = rng.normal(size=(81, 3)) @ basis + rng.normal(size=(81, 64)) * 0.01 + 2
+        np.save(case['data'], grid.images(vectors.reshape(81, 2, 32).astype(np.float32)))
+    dataset = CompressorDataset(metadata, 'train')
+    frames = np.stack([dataset[i].numpy() for i in range(len(dataset))])
+    rng_before = torch.get_rng_state().clone()
+    # A DataLoader consumes a worker seed even without workers. SVD must add no RNG side effects.
+    list(DataLoader(dataset, batch_size=64))
+    rng_after_loading = torch.get_rng_state().clone()
+    torch.set_rng_state(rng_before)
+    cuda_before = torch.cuda.get_rng_state().clone() if device == 'cuda' else None
+    pod = POD(rank=3, backend='torch', device=device).fit(dataset)
+    assert torch.equal(torch.get_rng_state(), rng_after_loading)
+    if cuda_before is not None:
+        assert torch.equal(torch.cuda.get_rng_state(), cuda_before)
+    vectors = grid.cells(frames).reshape(len(frames), -1)
+    centered = vectors - vectors.mean(axis=0)
+    singular_values = np.linalg.svd(centered, compute_uv=False)
+    reconstruction = grid.cells(pod.decode(pod.encode(frames))).reshape(vectors.shape)
+    np.testing.assert_allclose(np.linalg.norm(vectors - reconstruction) ** 2,
+                               np.square(singular_values[3:]).sum(), rtol=0.002)
+    np.testing.assert_allclose(pod.U_r.T @ pod.U_r, np.eye(3), atol=2e-5)
+    np.testing.assert_allclose(pod.singular_values, singular_values[:3], rtol=2e-5)
+    restored = pickle.loads(pickle.dumps(pod))
+    np.testing.assert_array_equal(restored.decode(restored.encode(frames)), pod.decode(pod.encode(frames)))
+    repeated = POD(rank=3, backend='torch', device=device).fit(dataset)
+    np.testing.assert_allclose(repeated.U_r, pod.U_r, atol=1e-6)
+
+
+def test_fit_progress_is_plain_text(metadata, capsys):
+    dataset = CompressorDataset(metadata, 'train')
+    POD(rank=2).fit(dataset)
+    output = capsys.readouterr().err
+    assert 'POD snapshots' in output and 'POD SVD' in output and '100%' in output

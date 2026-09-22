@@ -1,5 +1,5 @@
 import numpy as np
-from tqdm.auto import tqdm
+from tqdm import tqdm
 from ..Model import Model
 
 
@@ -42,7 +42,9 @@ class ARX(Model):
             raise ValueError("Empty training loader")
         penalty = np.eye(len(gram)) * self.alpha
         penalty[-1, -1] = 0
-        self.weights = np.linalg.lstsq(gram + penalty, rhs, rcond=None)[0]
+        with tqdm(total=1, desc="ARX solve") as progress:
+            self.weights = np.linalg.lstsq(gram + penalty, rhs, rcond=None)[0]
+            progress.update()
         return self
 
     def predict(self, states, forcing):

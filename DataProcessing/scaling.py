@@ -1,6 +1,6 @@
 """Streaming per-field statistics of training images, over valid pixels only."""
 import numpy as np
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
 
 class FeatureScaler:

@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
-from tqdm.auto import tqdm
+from tqdm import tqdm
 from Baselines.losses import error_function
 from DataProcessing.Dataset import keep_recent
 from ..Model import Model
@@ -210,7 +210,7 @@ class DLModel(Model):
         return {f"{prefix}_step_{k + 1}": float(value) for k, value in enumerate(steps)}
 
     def tensors(self, batch):
-        return [batch[key].to(self.device) for key in ("states", "forcing", "target")]
+        return [batch[key].to(self.device, non_blocking=True) for key in ("states", "forcing", "target")]
 
     def joint_loss(self, compressor, batch, mask):
         frames, forcing, target = self.tensors(batch)

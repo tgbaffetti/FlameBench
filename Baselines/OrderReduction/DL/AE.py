@@ -3,8 +3,8 @@ from abc import abstractmethod
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader
-from tqdm.auto import tqdm
+from tqdm import tqdm
+from DataProcessing.loading import make_loader
 from Baselines.losses import error_function
 from ..Compressor import Compressor
 
@@ -36,7 +36,7 @@ class AE(Compressor):
     def build_networks(self):
         """Create self.encoder and self.decoder for self.shape."""
 
-    def fit(self, dataset, validation=None, logger=None, **kwargs):
+    def fit(self, dataset, validation=None, logger=None, loader_options=None, **kwargs):
         if validation is None:
             raise ValueError(f"{type(self).__name__} requires a validation dataset")
         self.shape = tuple(dataset.field_shape)
@@ -46,14 +46,16 @@ class AE(Compressor):
         parameters = list(self.encoder.parameters()) + list(self.decoder.parameters())
         optimizer = torch.optim.AdamW(parameters, lr=self.lr)
         error = error_function(self.loss)
+        training_loader = make_loader(dataset, self.batch_size, shuffle=True, **(loader_options or {}))
+        validation_loader = make_loader(validation, self.batch_size, **(loader_options or {}))
         best, best_state = float("inf"), None
         epochs = tqdm(range(self.epochs), desc=f"{type(self).__name__} fit")
         for epoch in epochs:
             self.encoder.train()
             self.decoder.train()
             total = count = 0
-            for x in tqdm(DataLoader(dataset, batch_size=self.batch_size, shuffle=True), desc="training", leave=False):
-                x = x.to(self.device)
+            for x in tqdm(training_loader, desc="training", leave=False):
+                x = x.to(self.device, non_blocking=True)
                 encoded = self.encoder(x)
                 if self.beta:
                     mu, logvar = encoded.chunk(2, dim=-1)
@@ -73,11 +75,15 @@ class AE(Compressor):
                 total += loss.item() * len(x)
                 count += len(x)
             sse = n = 0
-            for x in tqdm(DataLoader(validation, batch_size=self.batch_size), desc="validation", leave=False):
-                x = x.numpy()
-                difference = (self.decode(self.encode(x)) - x)[..., validation.mask]
-                sse += float(np.square(difference).sum())
-                n += difference.size
+            self.encoder.eval()
+            self.decoder.eval()
+            with torch.no_grad():
+                for x in tqdm(validation_loader, desc="validation", leave=False):
+                    x = x.to(self.device, non_blocking=True)
+                    z = self.encoder(x)[:, :self.rank]
+                    difference = (self.decoder(z) - x)[..., mask]
+                    sse += difference.square().sum().item()
+                    n += difference.numel()
             value = sse/n
             if not np.isfinite(value):
                 raise FloatingPointError("Nonfinite reconstruction validation")

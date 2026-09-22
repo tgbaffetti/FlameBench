@@ -81,7 +81,39 @@ It needs disk space for the prepared dataset plus one temporarily extracted sour
 archive. Existing prepared files are kept unless `--overwrite` is supplied. After
 changing raw files, explicitly regenerate their prepared outputs. No raw data are
 deleted. DataLoader workers open read-only memory maps and copy only requested
-windows. POD uses bounded snapshot batches; latent trajectories are cached on disk.
+windows. POD reads batches and concatenates the full training matrix in RAM; latent
+trajectories are cached in RAM.
+
+DataLoader options are shared across scaler fitting, compressor fitting, forecaster
+training, and validation. Set `loader_options` in the notebook, or add this experiment
+config section (the old `workers` key remains a fallback):
+
+```json
+"dataloader": {
+  "num_workers": 2,
+  "pin_memory": true,
+  "persistent_workers": true,
+  "prefetch_factor": 1,
+  "multiprocessing_context": "spawn"
+}
+```
+
+For direct calls, use `make_loader` from `DataProcessing.loading` and pass
+`loader_options=...` to compressor `fit`, `reconstruction_error`, and `validation_error`.
+The neural training loops use nonblocking transfers; pinned memory is useful when
+moving batches to CUDA. Use `pin_memory=false` for CPU work. CAE reuses its loaders
+across epochs and evaluates reconstruction on the device.
+
+Compare 0, 2, and 4 workers on the server. Small latent batches can be faster with 0.
+Prefetching queues approximately `num_workers * prefetch_factor` batches; image
+windows can consume gigabytes of shared memory. Docker must provide enough `/dev/shm`.
+With 0 workers, worker-only options are ignored. Spawned workers mmap the data instead
+of duplicating the notebook's optional full-trajectory RAM cache. Use server-local
+storage when possible. These settings are configurable, not measured speedup claims.
+
+Fit and evaluation progress uses text tqdm without notebook widgets. Restart the
+notebook kernel after updating the code. POD loading has batch progress; SVD and ARX's
+linear solve show start/end bars because the libraries expose no iteration callback.
 
 The metadata currently lists the **eight cases actually present**: two training
 sweeps and six test trajectories (10/40 Hz at A=0.3/0.5, steps at A=0.3/0.5).
@@ -177,6 +209,21 @@ then centers it and runs SVD, as in the legacy code. This
 is randomized approximate POD, not incremental or volume-weighted POD. Feature
 standardization remains shared with the other compressors; legacy range scaling
 is not restored. Existing incremental-POD checkpoints require retraining.
+
+An optional `"backend": "torch"` in the compressor config runs `torch.svd_lowrank`
+on the experiment `device`. In the notebook set `pod_backend="torch"`. It uses the
+same centering, seed 42, 7 iterations, and rank + 20 sampled directions (capped by
+matrix dimensions). The default `"sklearn"` backend remains the legacy implementation.
+Torch uses a different random draw and factorization, so compare reconstruction errors,
+not signed basis entries. Both backends encode/decode with NumPy on CPU; only Torch's
+SVD fit uses the GPU. Save the backend in reported experiment settings.
+
+The current 80% training split produces roughly a 6 GB float32 matrix, plus SVD
+workspace and CPU copies. Try an L40S first and measure the complete fit time. CUDA
+speed and peak memory have not been measured here. PyTorch notes that low-rank SVD
+is not always faster than full SVD for dense matrices; benchmark this dataset before
+choosing a backend. See [torch.svd_lowrank](https://docs.pytorch.org/docs/stable/generated/torch.svd_lowrank.html)
+and [DataLoader options](https://docs.pytorch.org/docs/stable/data.html).
 `persistence` predicts a constant *latent* state, so includes compressor error.
 All compressors read images. POD and dense AE/VAE flatten them; CAE uses spatial
 convolutions and ViTAE uses attention between image patches. RAE, mesh models and

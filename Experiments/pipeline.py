@@ -4,7 +4,7 @@ The config gives the data (metadata, validation_fraction, blocks), the device, t
 and K_eval, the number of recursive steps of the validation windows. The scaler is fitted once on
 the training frames and never tuned.
 """
-from torch.utils.data import DataLoader
+from DataProcessing.loading import make_loader
 from DataProcessing.metadata import load_metadata
 from DataProcessing.Dataset import CompressorDataset
 from DataProcessing.scaling import FeatureScaler
@@ -20,16 +20,16 @@ class Pipeline:
         self.device = config.get("device", "cpu")
         self.K_eval = config.get("K_eval", 1)
         self.joint_batch_size = config.get("joint_batch_size", 8)
+        self.loader_options = {"num_workers": config.get("workers", 0), **config.get("dataloader", {})}
         self.scaler = None
 
     def loader(self, dataset, shuffle=False, batch_size=None):
-        workers = self.config.get("workers", 0)
-        return DataLoader(dataset, batch_size=batch_size or self.config.get("batch_size", 64), shuffle=shuffle,
-                          num_workers=workers, persistent_workers=workers > 0)
+        return make_loader(dataset, batch_size=batch_size or self.config.get("batch_size", 64), shuffle=shuffle,
+                           **self.loader_options)
 
     def fit_scaler(self):
         frames = CompressorDataset(self.metadata, "train", **self.split)
-        self.scaler = FeatureScaler(frames.mask).fit(DataLoader(frames, self.config.get("preprocessing_batch_size", 64)))
+        self.scaler = FeatureScaler(frames.mask).fit(self.loader(frames, batch_size=self.config.get("preprocessing_batch_size", 64)))
         return self.scaler
 
     def frames(self, partition):
@@ -48,8 +48,8 @@ class Pipeline:
         """Build and fit a compressor; return it with its validation reconstruction MSE."""
         compressor = compressor_class.build(hyperparameters, device=self.device)
         validation = self.frames("validation")
-        compressor.fit(self.frames("train"), validation=validation, logger=logger)
-        return compressor, reconstruction_error(compressor, validation)
+        compressor.fit(self.frames("train"), validation=validation, logger=logger, loader_options=self.loader_options)
+        return compressor, reconstruction_error(compressor, validation, loader_options=self.loader_options)
 
     def train_forecaster(self, forecaster_class, hyperparameters, dataset_class, dataset_hyperparameters, compressor,
                          logger=None, directory=None, resume=False):
@@ -74,4 +74,4 @@ class Pipeline:
     def validation_error(self, forecaster, compressor, dataset_class, dataset_hyperparameters):
         """Field MSE of K_eval-step recursive forecasts: the selection objective."""
         dataset = self.windows(dataset_class, dataset_hyperparameters, "validation", validation=True)
-        return validation_error(forecaster, compressor, dataset, self.joint_batch_size)
+        return validation_error(forecaster, compressor, dataset, self.joint_batch_size, self.loader_options)
