@@ -352,7 +352,19 @@ Consolidated findings (POD pass; CAE/VAE pass pending Carlo):
 - Where NARX is stable it dominates ARX on FTF gain (0.015-0.32 vs 0.15-0.72) at comparable or
   better nRMSE. The paper can report NARX as "best forcing response, conditional on stability"
   with ARX as the robust baseline — an honest and interesting pairing.
-- Evaluating cross_alpha=30000 (already fitted) to map the stability/accuracy trade-off curve.
+- cross_alpha=30000 completes the curve: f40_A05 comes down from 1.1e6 to 11.0 (tamed, still
+  unusable) while the FTF advantage is destroyed — f40_A03 gain err 0.072 -> 1.418, f10_A03
+  0.015 -> 0.089. **No cross_alpha makes NARX stable on all six cases: the shrinkage that
+  stabilizes the hard corner is exactly the shrinkage that removes the forcing response.**
+  Validation picks 3000, the sensible operating point, and that is the number to report.
+  This is a cleaner claim than a fix would have been — the bilinear gain is the mechanism for
+  both effects, so they cannot be separated by regularization alone.
+
+| cross_alpha | f10_A03 gain err | f40_A03 gain err | f40_A05 AR | cases stable |
+|---|---|---|---|---|
+| 30 (global) | 0.016 | 4.97 | 2.8e21 | 3/6 |
+| 3000 | **0.015** | **0.072** | 1.1e6 | 5/6 |
+| 30000 | 0.089 | 1.418 | 11.0 | 5/6 (f40_A05 tamed, not usable) |
 
 
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
