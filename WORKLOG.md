@@ -495,6 +495,39 @@ integrated.** The qualitative findings (forcing-response ranking, one-step/rollo
 stability trade-offs) are protocol-independent in kind, but no number carries over.
 
 
+## 2026-09-23 — pre-merge assessment (carlo @ b63dcd8)
+Carlo's overnight+morning commits: parallel HPO v2 (process pools, constant-liar TPE, stage-1
+rank cache with file locks, refit command), per-step validation error, Test_Summary W&B
+aggregation (mean/worst nRMSE, per-frequency gain/phase), GPU-batched SSIM. **K_eval is now 150**
+(was 50 when we adopted "theirs" — decision restated as: adopt his current 150). Still absent on
+his side: bounded divergence gate, per-case divergence status at test, horizon-binned test
+nRMSE, one-step/restart_every test protocol — our four ports remain necessary.
+
+Divergence: 51 commits (gianmarco) vs 18 (carlo) from base 1a41d0f; 15 semantically conflicted
+files incl. one add/add (paths.py) and one modify/delete (latent.py).
+
+Strategies evaluated:
+1. Plain merge + hand-resolve — rejected: the conflicts are two architectures in the same
+   files; resolving means designing the integration inside conflict markers, unreviewable.
+2. Rebase ours onto carlo — rejected: 51 replayed commits, conflicts at nearly every step,
+   rewrites pushed history.
+3. `-X theirs/ours` — rejected: auto-picks sides per hunk, silently mixes architectures into a
+   tree neither side ever tested, silent code loss.
+4. **Ancestry merge + explicit ports (chosen)**: `integration` branch from carlo;
+   `git merge -s ours gianmarco` (both histories become ancestors, tree stays his, tests green);
+   then small reviewed commits, tree green after each:
+   - P0a carry-over of additive files (WORKLOG, literature/, slides/, grid.py, qprime.py);
+   - P0b port the four eval features into his evaluation/run/metrics + tests;
+   - P1 NARX (+cross_alpha) into his Classical contract (note: his ARX fits the increment —
+     NARX port must match) + tests;
+   - P2 ZeroD baselines + runner;
+   - P3 (optional tier) operators via cells-gather on his datasets; drop MGN, latent.py, unroll
+     machinery (superseded by his horizon/rollout_weight) and obsolete configs.
+   End: merge integration back to gianmarco; carlo merges it trivially (his content untouched
+   except reviewed additions). His running experiments are unaffected; the gate port changes
+   selection behavior deliberately — he should pull before the next HPO wave.
+
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.
