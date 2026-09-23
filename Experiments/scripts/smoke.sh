@@ -26,7 +26,8 @@ run() { # run <gpu|cpu> <config-stem> [extra args...]
             "$sif" "$python" -m Experiments.run run --config "Experiments/Configs/${cfg}.json" \
             "$@" > "$log" 2>&1
     fi
-    echo "[$(date +%FT%T)] DONE  ${cfg} exit=$? (log: ${log})"
+    local status=$?  # Before $(date): command substitution would reset $?.
+    echo "[$(date +%FT%T)] DONE  ${cfg} exit=${status} (log: ${log})"
 }
 
 lane() { local gpu="$1"; shift; for cfg in "$@"; do run "$gpu" "$cfg"; done; }
