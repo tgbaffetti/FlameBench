@@ -72,8 +72,10 @@ def validation_error(forecaster, compressor, dataset, batch_size=16, loader_opti
 def summarize(results, cases):
     """The few numbers that rank runs (Test_Summary/...), from the per-case test results of evaluate.
 
-    nrmse and ssim average mean_nrmse and mean_ssim over the test cases; nrmse_worst is the worst
-    case. heat_release_l2 averages the relative L2 error of integrated Q. Sine
+    nrmse and ssim average mean_nrmse and mean_ssim over the cases that completed; a diverged
+    case contributes only diverged_cases, never its partial early-step metrics, and any
+    divergence makes nrmse_worst infinite so the run cannot outrank a fully stable one.
+    heat_release_l2 averages the relative L2 error of integrated Q. Sine
     cases are grouped by forcing frequency: gain_error_<f>hz averages the relative gain error and
     phase_error_<f>hz the absolute phase error in degrees, because models can be right at one
     frequency and wrong at another. Missing values (e.g. heat release disabled) are skipped.
@@ -82,14 +84,15 @@ def summarize(results, cases):
         values = [v for v in values if v is not None]
         return float(np.mean(values)) if values else None
 
-    nrmse = [r["mean_nrmse"] for r in results.values() if r.get("mean_nrmse") is not None]
+    completed = [r for r in results.values() if r.get("status") != "diverged"]
+    diverged = len(results) - len(completed)
+    nrmse = [r["mean_nrmse"] for r in completed if r.get("mean_nrmse") is not None]
     summary = {"Test_Summary/nrmse": mean(nrmse),
-               "Test_Summary/nrmse_worst": max(nrmse) if nrmse else None,
-               # Diverged cases drop out of the means; count them so they cannot vanish silently.
-               "Test_Summary/diverged_cases": sum(1 for r in results.values() if r.get("status") == "diverged"),
-               "Test_Summary/ssim": mean(r.get("mean_ssim") for r in results.values()),
-               "Test_Summary/heat_release_l2": mean(r.get("heat_release_relative_l2") for r in results.values()),
-               "Test_Summary/seconds_per_step": mean(r.get("seconds_per_step") for r in results.values())}
+               "Test_Summary/nrmse_worst": float("inf") if diverged else (max(nrmse) if nrmse else None),
+               "Test_Summary/diverged_cases": diverged,
+               "Test_Summary/ssim": mean(r.get("mean_ssim") for r in completed),
+               "Test_Summary/heat_release_l2": mean(r.get("heat_release_relative_l2") for r in completed),
+               "Test_Summary/seconds_per_step": mean(r.get("seconds_per_step") for r in completed)}
     frequencies = {case["name"]: case["frequency_hz"] for case in cases if case.get("waveform") == "sine"}
     for frequency in sorted(set(frequencies.values())):
         gain_phase = [results[name].get("gain_phase", {}) for name, f in frequencies.items()
@@ -112,11 +115,14 @@ METRIC_BATCH = 128  # Test frames per metric batch: batched SSIM (on the GPU whe
 def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
              initialization="steady", gain_phase_start=0.5, save_predictions=False,
              restart_every=None):
-    """restart_every=k re-encodes the observed history every k steps (k=1 is the pure one-step
-    protocol); None rolls out freely. Restarted protocols write metrics_restart<k>.json and
-    suffixed Q/prediction files, so free-rollout results are never overwritten. A case whose
-    rollout goes nonfinite is recorded (status "diverged", diverged_at_step, the metrics
-    accumulated so far) and evaluation continues with the next case."""
+    """restart_every=k resets the model to the observed history every k steps (k=1 is the pure
+    one-step protocol); None rolls out freely. Before a full observed history exists the restart
+    window is padded with the initialization window (the steady frame), so k=1 is one-step from
+    the first step; each observed frame is encoded once and reused across restarts. Restarted
+    protocols write metrics_restart<k>.json and suffixed Q/prediction files, so free-rollout
+    results are never overwritten. A case whose rollout goes nonfinite is recorded (status
+    "diverged", the exact diverged_at_step, the metrics accumulated so far) and evaluation
+    continues with the next case."""
     if restart_every is not None and restart_every < 1:
         raise ValueError("restart_every must be a positive integer or None")
     suffix = f"_restart{restart_every}" if restart_every else ""
@@ -150,7 +156,12 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
         # Warm up transition and decoder. Timing excludes disk reads and metrics.
         forcing = forcing_window(phi, first, length, dataset.Ni)
         warmup_latent = model.predict(states, forcing)
-        scaler.inverse(compressor.decode(warmup_latent))
+        # A nonfinite warm-up is the first step's divergence; the loop reports it per case.
+        if np.isfinite(warmup_latent).all():
+            try:
+                scaler.inverse(compressor.decode(warmup_latent))
+            except FloatingPointError:
+                pass
         synchronize(model)
         metrics, elapsed = FieldMetrics(metadata["fields"]), 0.0
         # SSIM data range: range of each reference field over the case, read in chunks.
@@ -178,41 +189,45 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
         if save_predictions:
             output = np.lib.format.open_memmap(directory / f"{case['name']}_predictions{suffix}.npy", mode="w+",
                        dtype="float32", shape=(hi-first, *dataset.field_shape))
+        # Rolling latents of the observed window for restarts, seeded from the initialization
+        # window: restarts before a full observed history pad with the steady frame, exactly like
+        # the rollout start, and each observed frame is encoded once instead of re-encoding the
+        # whole window at every restart.
+        restart_window = list(states[0]) if restart_every else None
         diverged_at = None
         for k in tqdm(range(first, hi), desc=f"Test {case['name']}"):
-            if restart_every and k > first and (k - first) % restart_every == 0 and k - length >= lo:
-                states = keep_recent(compressor.encode(scaler.transform(np.array(x[k-length:k])))[None],
-                                     dataset.Nx + 1)
+            if restart_window is not None and k > first and (k - first) % restart_every == 0:
+                states = np.stack(restart_window)[None]
             forcing = forcing_window(phi, k, length, dataset.Ni)
             synchronize(model)
             begin = time.perf_counter()
             z = model.predict(states, forcing)
             # Divergence is a reportable outcome, not an abort: the latent check runs before
-            # decoding because decoders may reject nonfinite input.
-            if not np.isfinite(z).all():
+            # decoding because decoders may reject nonfinite input, and the decoded frame is
+            # checked too, so diverged_at_step is exact. The frames buffered before the break
+            # are finite and still count toward the partial metrics; a nonfinite reference
+            # frame is a data error and raises in score, not a divergence.
+            predicted = None
+            if np.isfinite(z).all():
+                predicted = scaler.inverse(compressor.decode(z))[0]
+                synchronize(model)
+                elapsed += time.perf_counter()-begin
+            if predicted is None or not np.isfinite(predicted).all():
                 diverged_at = k - first
-                buffer.clear()
-                break
-            predicted = scaler.inverse(compressor.decode(z))[0]
-            synchronize(model)
-            elapsed += time.perf_counter()-begin
-            buffer.append((predicted, np.array(x[k])))
-            if len(buffer) == METRIC_BATCH:
-                try:
+                if buffer:
                     score(buffer)
-                except FloatingPointError:  # Nonfinite past the decoder; step known to batch precision.
-                    diverged_at = k - first
-                    buffer.clear()
-                    break
+                break
+            reference = np.array(x[k])
+            buffer.append((predicted, reference))
+            if len(buffer) == METRIC_BATCH:
+                score(buffer)
             if output is not None:
                 output[k-first] = predicted
             states = keep_recent(np.concatenate((states[:, 1:], z[:, None]), axis=1), dataset.Nx + 1)
+            if restart_window is not None:
+                restart_window = restart_window[1:] + [compressor.encode(scaler.transform(reference[None]))[0]]
         if buffer:
-            try:
-                score(buffer)
-            except FloatingPointError:
-                diverged_at = hi - first
-                buffer.clear()
+            score(buffer)
         if output is not None:
             output.flush()
             del output

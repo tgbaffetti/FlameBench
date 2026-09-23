@@ -141,16 +141,22 @@ def fit(config, resume=False, preprocessing=None):
                        "forecaster": getattr(forecaster, "best_epochs", None),
                        "joint": getattr(forecaster, "best_joint_epochs", None)}
         logger.log({f"Validation/best_epoch_{stage}": epochs for stage, epochs in best_epochs.items() if epochs})
-        if score is not None:  # None in a refit, which has no validation data.
-            if not np.isfinite(score):
-                raise FloatingPointError("Validation forecast diverged")
+        # A nonfinite (or gated) validation score marks a diverged model, but the fit is still
+        # saved and tested: the gate belongs to selection, not to the destruction of hours of
+        # training, and test() reports per-case divergence honestly.
+        diverged = score is not None and not np.isfinite(score)
+        if score is not None and not diverged:
             logger.log({"Validation/field_mse": score})
             steps = pipeline.validation_steps
             logger.lines("Validation/error_vs_step", range(1, len(steps) + 1), {"field_mse": steps},
                          "Validation field MSE against rollout step", "rollout step")
+        if diverged:
+            logger.log({"Validation/diverged": 1})
         # Everything test() needs; the compressor is saved here because joint training changes it.
         dump(directory / "model.pkl", (pipeline.scaler, to_device(compressor, "cpu"), to_device(forecaster, "cpu")))
-        write_json(directory / "summary.json", {"validation_field_mse": score, "train_frames": len(pipeline.frames("train")),
+        write_json(directory / "summary.json", {"validation_field_mse": None if diverged else score,
+                                                "validation_diverged": diverged,
+                                                "train_frames": len(pipeline.frames("train")),
                                                 "best_epochs": {k: v for k, v in best_epochs.items() if v}})
         return score
     finally:
@@ -177,37 +183,48 @@ def test(config):
     logger = ExperimentLogger(directory, config, resume=True)
     try:
         results = forecaster.test(dataset, compressor, scaler, directory, **config.get("evaluation", {}))
-        log_test(logger, results, dataset.metadata, directory)
+        log_test(logger, results, dataset.metadata, directory,
+                 config.get("evaluation", {}).get("restart_every"))
         return results
     finally:
         logger.close()
 
 
-def log_test(logger, results, metadata, directory):
+def log_test(logger, results, metadata, directory, restart_every=None):
     """Test/<case>/... scalars, the Test/per_field_nrmse table, the Test/<case>/heat_release plot
-    (predicted and reference integrated Q, when evaluated) and the Test_Summary/... numbers."""
+    (predicted and reference integrated Q, when evaluated) and the Test_Summary/... numbers.
+
+    A restarted protocol logs under Test_restart<k>/ and Test_Summary_restart<k>/ and reads the
+    suffixed Q files, so it never overwrites the free-rollout results. The infinite nrmse_worst
+    of a run with a diverged case becomes null in the logs (allow_nan=False); diverged_cases > 0
+    on the same row marks it."""
+    suffix = f"_restart{restart_every}" if restart_every else ""
     scalars = {}
     for name, result in results.items():
         gain_phase = result.get("gain_phase", {})
         # A diverged case reports only what it accumulated before breaking.
-        scalars.update({f"Test/{name}/nrmse": result.get("mean_nrmse"), f"Test/{name}/ssim": result.get("mean_ssim"),
-                        f"Test/{name}/heat_release_l2": result.get("heat_release_relative_l2"),
-                        f"Test/{name}/gain_error": gain_phase.get("relative_gain_error"),
-                        f"Test/{name}/phase_error_deg": gain_phase.get("phase_error_deg"),
-                        f"Test/{name}/seconds_per_step": result.get("seconds_per_step"),
-                        f"Test/{name}/diverged_at_step": result.get("diverged_at_step")})
+        scalars.update({f"Test{suffix}/{name}/nrmse": result.get("mean_nrmse"),
+                        f"Test{suffix}/{name}/ssim": result.get("mean_ssim"),
+                        f"Test{suffix}/{name}/heat_release_l2": result.get("heat_release_relative_l2"),
+                        f"Test{suffix}/{name}/gain_error": gain_phase.get("relative_gain_error"),
+                        f"Test{suffix}/{name}/phase_error_deg": gain_phase.get("phase_error_deg"),
+                        f"Test{suffix}/{name}/seconds_per_step": result.get("seconds_per_step"),
+                        f"Test{suffix}/{name}/diverged_at_step": result.get("diverged_at_step")})
     logger.log(scalars)
     fields = metadata["fields"]
-    logger.table("Test/per_field_nrmse", ["case", *fields],
+    logger.table(f"Test{suffix}/per_field_nrmse", ["case", *fields],
                  [[name, *(result["field_nrmse"][field] for field in fields)]
                   for name, result in results.items() if "field_nrmse" in result])
     for name in results:
-        path = Path(directory) / f"{name}_Q.npz"
+        path = Path(directory) / f"{name}_Q{suffix}.npz"
         if path.exists():
             with np.load(path) as q:
-                logger.lines(f"Test/{name}/heat_release", q["time"], {"reference": q["reference"], "predicted": q["predicted"]},
+                logger.lines(f"Test{suffix}/{name}/heat_release", q["time"], {"reference": q["reference"], "predicted": q["predicted"]},
                              f"{name}: integrated heat release", "time [s]")
-    logger.summary(summarize(results, metadata["cases"]))
+    summary = {key.replace("Test_Summary/", f"Test_Summary{suffix}/"): value
+               for key, value in summarize(results, metadata["cases"]).items()}
+    logger.summary({key: None if isinstance(value, float) and not np.isfinite(value) else value
+                    for key, value in summary.items()})
 
 
 def refit_config(config):

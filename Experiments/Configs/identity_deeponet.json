@@ -22,8 +22,6 @@
   },
   "forecaster": {
     "name": "deeponet",
-    "grid": "Data/grid_indices.npz",
-    "fields": 11,
     "sensors": 2048,
     "p": 64,
     "hidden": 256,

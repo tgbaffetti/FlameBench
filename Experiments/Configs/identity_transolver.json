@@ -22,8 +22,6 @@
   },
   "forecaster": {
     "name": "transolver",
-    "grid": "Data/grid_indices.npz",
-    "fields": 11,
     "dim": 128,
     "depth": 4,
     "heads": 4,
