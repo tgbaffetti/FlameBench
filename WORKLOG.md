@@ -528,6 +528,18 @@ Strategies evaluated:
    selection behavior deliberately — he should pull before the next HPO wave.
 
 
+## 2026-09-23 — integration progress + scope decision
+On `integration` (base carlo b63dcd8, ancestry merge a7e15ba): P0a docs carried (f11f4bc);
+P0b ported — bounded divergence gate on Pipeline.validation_error (3a), per-case divergence
+status + horizon-binned nRMSE + restart_every one-step protocol in evaluate/metrics with
+log_test/Test_Summary guards (3b); P1 ported — control-affine NARX with separate bilinear
+ridge, increment form matching his ARX, both alphas HPO-tunable. Suite 118 green.
+**Decision (Gianmarco): the 0-D flame-response baselines are dropped completely** — no ZeroD
+port; the final method set is {ARX, NARX, Constant, GRU, LSTM, CNN, Transformer} x
+{POD, CAE, ViTAE, identity} plus DeepONet and Transolver. The q'/FTF columns remain (computed
+for every field model), but there is no 0-D row.
+
+
 Working order (each step: implement → pytest → 2-epoch smoke run → doc):
 1. DMDc + persistence configs, smoke-tested. 2. 0-D flame-response baseline (q' from `mix:Q` +
 cell volumes from grid.vtu). 3. DeepONet (adds a raw-field model path in `run.py`). 4. Transolver.
