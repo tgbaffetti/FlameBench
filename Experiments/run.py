@@ -37,6 +37,8 @@ from Baselines.OrderReduction.DL.ViTAE import ViTAE
 from Baselines.Forecast.Classical.ARX import ARX, NARX, Constant
 from Baselines.Forecast.DL.DLModel import DLModel
 from Baselines.Forecast.DL.networks import GRU, LSTM, CNN, Transformer
+from Baselines.Forecast.DL.deeponet import DeepONet
+from Baselines.Forecast.DL.transolver import Transolver
 from .evaluation import summarize
 from .HPO import optimize
 from .logging import ExperimentLogger
@@ -45,7 +47,7 @@ from .pipeline import Pipeline
 from utils import seed_everything, write_json, provenance
 
 COMPRESSORS = {"pod": POD, "cae": CAE, "vit_ae": ViTAE, "identity": Identity}
-FORECASTERS = {"arx": ARX, "narx": NARX, "constant": Constant, "gru": GRU, "lstm": LSTM, "cnn": CNN, "transformer": Transformer}
+FORECASTERS = {"arx": ARX, "narx": NARX, "constant": Constant, "gru": GRU, "lstm": LSTM, "cnn": CNN, "transformer": Transformer, "deeponet": DeepONet, "transolver": Transolver}
 
 
 CONFIG_KEYS = {"metadata", "output", "run_name", "seed", "device", "cpu_threads", "validation_fraction", "blocks",
