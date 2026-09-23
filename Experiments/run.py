@@ -50,7 +50,8 @@ FORECASTERS = {"arx": ARX, "constant": Constant, "gru": GRU, "lstm": LSTM, "cnn"
 
 CONFIG_KEYS = {"metadata", "output", "run_name", "seed", "device", "cpu_threads", "validation_fraction", "blocks",
                "batch_size", "joint_batch_size", "workers", "dataloader", "in_memory", "preprocessing_batch_size", "K_eval", "trials",
-               "compressor", "dataset", "forecaster", "logging", "evaluation", "stage", "parallel"}
+               "compressor", "dataset", "forecaster", "logging", "evaluation", "stage", "parallel",
+               "divergence_factor"}
 
 
 def check_config(config):

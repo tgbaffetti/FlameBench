@@ -736,3 +736,24 @@ def test_parallel_hpo_and_seeds(metadata,tmp_path):
     # POD comes from seed 0 in every seed.
     bases=[pickle.loads((tmp_path/'hpo'/'pod_gru'/f'seed_{seed}'/'preprocessing.pkl').read_bytes())[1].U_r for seed in (0,1,2)]
     assert all(np.array_equal(bases[0],basis) for basis in bases[1:])
+
+
+def test_divergence_gate_bounds_validation_score(metadata,tmp_path):
+    from Experiments.pipeline import Pipeline
+    from Baselines.OrderReduction.Identity import Identity
+    from Baselines.Forecast.Classical.ARX import Constant
+    path=tmp_path/'metadata.json';path.write_text(json.dumps(metadata))
+    cfg={'metadata':str(path),**SETTINGS,'divergence_factor':5}
+    pipeline=Pipeline(cfg)
+    pipeline.fit_scaler()
+    compressor,_=pipeline.train_compressor(Identity,{})
+    dataset={'Nx':1,'Ni':0,'horizon':1}
+    # Repeating the last state scores exactly the reference: ratio 1, always inside the gate.
+    assert np.isfinite(pipeline.validation_error(Constant(Nx=1,Ni=0),compressor,ForecasterDataset,dataset))
+    class Amplifier:
+        def predict(self,states,forcing):
+            return np.asarray(states[:,-1])*3  # Finite for K_eval steps, astronomically bad.
+    assert pipeline.validation_error(Amplifier(),compressor,ForecasterDataset,dataset)==float('inf')
+    assert pipeline.validation_steps is None  # No per-step curve is reported for a gated score.
+    # The reference is computed once per compressor and window shape.
+    assert len(pipeline._frozen)==1

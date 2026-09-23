@@ -5,10 +5,12 @@ and K_eval, the number of recursive steps of the validation windows. The scaler 
 the training frames and never tuned. validation_fraction 0 is the refit after the HPO: all training
 frames are used, nothing is validated, and the validation errors are None.
 """
+import numpy as np
 from DataProcessing.loading import make_loader
 from DataProcessing.metadata import load_metadata
 from DataProcessing.Dataset import CompressorDataset
 from DataProcessing.scaling import FeatureScaler
+from Baselines.Forecast.Classical.ARX import Constant
 from Baselines.Forecast.DL.DLModel import DLModel
 from .evaluation import reconstruction_error, validation_error
 
@@ -25,6 +27,7 @@ class Pipeline:
         self.scaler = None
         self.refit = self.split["validation_fraction"] == 0
         self.validation_steps = None  # Field MSE at each rollout step of the last validation_error.
+        self._frozen = {}  # (compressor id, Nx, Ni) -> (compressor, frozen-state reference error)
 
     def loader(self, dataset, shuffle=False, batch_size=None):
         return make_loader(dataset, batch_size=batch_size or self.config.get("batch_size", 64), shuffle=shuffle,
@@ -84,11 +87,37 @@ class Pipeline:
                              validation, logger=logger)
         return self.validation_error(forecaster, compressor, dataset_class, dataset_hyperparameters)
 
+    def frozen_reference(self, compressor, dataset_class, dataset_hyperparameters):
+        """Validation error of repeating the last state forever: the scale of the divergence gate.
+
+        Cached per compressor and window shape; the entry pins the compressor so its id stays
+        valid. After joint fine-tuning the reference is slightly stale (same object, new
+        decoder) — irrelevant at the default gate factor of 100.
+        """
+        dataset = self.windows(dataset_class, dataset_hyperparameters, "validation", validation=True)
+        key = (id(compressor), dataset.Nx, dataset.Ni)
+        if key not in self._frozen:
+            frozen = Constant(Nx=dataset.Nx, Ni=dataset.Ni)
+            self._frozen[key] = (compressor, validation_error(frozen, compressor, dataset,
+                                                              self.joint_batch_size, self.loader_options))
+        return self._frozen[key][1]
+
     def validation_error(self, forecaster, compressor, dataset_class, dataset_hyperparameters):
-        """Field MSE of K_eval-step recursive forecasts: the selection objective (None in a refit)."""
+        """Field MSE of K_eval-step recursive forecasts: the selection objective (None in a refit).
+
+        A finite score worse than divergence_factor (default 100) times the frozen-state
+        reference returns infinity: finite-but-astronomical rollouts (observed up to 1e42) must
+        not survive selection, and both fit and the HPO already treat infinity as diverged.
+        """
         if self.refit:
             return None
         dataset = self.windows(dataset_class, dataset_hyperparameters, "validation", validation=True)
         error, self.validation_steps = validation_error(forecaster, compressor, dataset, self.joint_batch_size,
                                                         self.loader_options, per_step=True)
+        if error is not None and np.isfinite(error):
+            reference = self.frozen_reference(compressor, dataset_class, dataset_hyperparameters)
+            bound = self.config.get("divergence_factor", 100) * max(reference, np.finfo(np.float64).tiny)
+            if error > bound:
+                self.validation_steps = None
+                return float("inf")
         return error
