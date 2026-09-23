@@ -4,12 +4,27 @@ import torch
 
 
 class FieldMetrics:
-    def __init__(self, fields):
+    """Streaming nRMSE per field, pooled and per rollout-horizon bin.
+
+    Frames arrive in rollout order; bin_edges (1-based steps, inclusive) split the horizon,
+    e.g. (10, 100, 1000) gives bins 1-10, 11-100, 101-1000, 1001+. Bins are normalized by the
+    pooled reference std, so they are comparable with each other and with the pooled value.
+    """
+
+    def __init__(self, fields, bin_edges=(10, 100, 1000)):
+        if list(bin_edges) != sorted(set(bin_edges)) or (bin_edges and bin_edges[0] < 1):
+            raise ValueError("bin_edges must be strictly increasing and >= 1")
         self.fields = list(fields)
+        self.bin_edges = np.asarray(bin_edges)
+        lows, highs = (1, *(edge + 1 for edge in bin_edges)), (*bin_edges, None)
+        self.bin_labels = [f"{lo}-{hi}" if hi else f"{lo}+" for lo, hi in zip(lows, highs)]
         self.count = 0
+        self.frames = 0
         self.mean = np.zeros(len(fields), dtype=np.float64)
         self.m2 = np.zeros(len(fields), dtype=np.float64)
         self.sse = np.zeros(len(fields), dtype=np.float64)
+        self.bin_sse = np.zeros((len(self.bin_labels), len(fields)), dtype=np.float64)
+        self.bin_frames = np.zeros(len(self.bin_labels), dtype=np.int64)
 
     def update(self, predicted, reference):
         """One frame: (field, cell) arrays."""
@@ -28,16 +43,34 @@ class FieldMetrics:
         self.m2 += np.square(reference - mu[None, :, None]).sum(axis=(0, 2)) + delta**2*self.count*n/(self.count+n)
         self.mean += delta*n/(self.count+n)
         self.count += n
-        self.sse += np.square(predicted-reference).sum(axis=(0, 2))
+        per_frame = np.square(predicted-reference).sum(axis=2)
+        self.sse += per_frame.sum(axis=0)
+        steps = self.frames + 1 + np.arange(len(reference))  # 1-based rollout steps
+        bins = np.searchsorted(self.bin_edges, steps, side="left")
+        np.add.at(self.bin_sse, bins, per_frame)
+        np.add.at(self.bin_frames, bins, 1)
+        self.frames += len(reference)
+
+    @staticmethod
+    def _nrmse(rmse, std):
+        # Constant reference fields have undefined std-normalized error, not zero error.
+        return [float(a/b) if b > 0 else None for a, b in zip(rmse, std)]
 
     def result(self):
         std = np.sqrt(self.m2/self.count)
-        rmse = np.sqrt(self.sse/self.count)
-        # Constant reference fields have undefined std-normalized error, not zero error.
-        nrmse = [float(a/b) if b > 0 else None for a, b in zip(rmse, std)]
+        nrmse = self._nrmse(np.sqrt(self.sse/self.count), std)
+        cells = self.count // self.frames
+        horizon = {}
+        for label, sse, frames in zip(self.bin_labels, self.bin_sse, self.bin_frames):
+            if frames == 0:
+                continue
+            binned = self._nrmse(np.sqrt(sse / (frames * cells)), std)
+            horizon[label] = {"field_nrmse": dict(zip(self.fields, binned)), "frames": int(frames),
+                              "mean_nrmse": float(np.mean(binned)) if all(x is not None for x in binned) else None}
         return {"field_nrmse": dict(zip(self.fields, nrmse)),
-                "field_rmse": dict(zip(self.fields, map(float, rmse))),
+                "field_rmse": dict(zip(self.fields, map(float, np.sqrt(self.sse/self.count)))),
                 "mean_nrmse": float(np.mean(nrmse)) if all(x is not None for x in nrmse) else None,
+                "horizon_nrmse": horizon,
                 "undefined_fields": [f for f, value in zip(self.fields, nrmse) if value is None]}
 
 

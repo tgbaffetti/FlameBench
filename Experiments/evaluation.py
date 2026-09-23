@@ -85,6 +85,8 @@ def summarize(results, cases):
     nrmse = [r["mean_nrmse"] for r in results.values() if r.get("mean_nrmse") is not None]
     summary = {"Test_Summary/nrmse": mean(nrmse),
                "Test_Summary/nrmse_worst": max(nrmse) if nrmse else None,
+               # Diverged cases drop out of the means; count them so they cannot vanish silently.
+               "Test_Summary/diverged_cases": sum(1 for r in results.values() if r.get("status") == "diverged"),
                "Test_Summary/ssim": mean(r.get("mean_ssim") for r in results.values()),
                "Test_Summary/heat_release_l2": mean(r.get("heat_release_relative_l2") for r in results.values()),
                "Test_Summary/seconds_per_step": mean(r.get("seconds_per_step") for r in results.values())}
@@ -108,7 +110,16 @@ METRIC_BATCH = 128  # Test frames per metric batch: batched SSIM (on the GPU whe
 
 
 def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
-             initialization="steady", gain_phase_start=0.5, save_predictions=False):
+             initialization="steady", gain_phase_start=0.5, save_predictions=False,
+             restart_every=None):
+    """restart_every=k re-encodes the observed history every k steps (k=1 is the pure one-step
+    protocol); None rolls out freely. Restarted protocols write metrics_restart<k>.json and
+    suffixed Q/prediction files, so free-rollout results are never overwritten. A case whose
+    rollout goes nonfinite is recorded (status "diverged", diverged_at_step, the metrics
+    accumulated so far) and evaluation continues with the next case."""
+    if restart_every is not None and restart_every < 1:
+        raise ValueError("restart_every must be a positive integer or None")
+    suffix = f"_restart{restart_every}" if restart_every else ""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     metadata = dataset.metadata
@@ -165,29 +176,58 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
 
         output = None
         if save_predictions:
-            output = np.lib.format.open_memmap(directory / f"{case['name']}_predictions.npy", mode="w+",
+            output = np.lib.format.open_memmap(directory / f"{case['name']}_predictions{suffix}.npy", mode="w+",
                        dtype="float32", shape=(hi-first, *dataset.field_shape))
+        diverged_at = None
         for k in tqdm(range(first, hi), desc=f"Test {case['name']}"):
+            if restart_every and k > first and (k - first) % restart_every == 0 and k - length >= lo:
+                states = keep_recent(compressor.encode(scaler.transform(np.array(x[k-length:k])))[None],
+                                     dataset.Nx + 1)
             forcing = forcing_window(phi, k, length, dataset.Ni)
             synchronize(model)
             begin = time.perf_counter()
             z = model.predict(states, forcing)
+            # Divergence is a reportable outcome, not an abort: the latent check runs before
+            # decoding because decoders may reject nonfinite input.
+            if not np.isfinite(z).all():
+                diverged_at = k - first
+                buffer.clear()
+                break
             predicted = scaler.inverse(compressor.decode(z))[0]
             synchronize(model)
             elapsed += time.perf_counter()-begin
             buffer.append((predicted, np.array(x[k])))
             if len(buffer) == METRIC_BATCH:
-                score(buffer)
+                try:
+                    score(buffer)
+                except FloatingPointError:  # Nonfinite past the decoder; step known to batch precision.
+                    diverged_at = k - first
+                    buffer.clear()
+                    break
             if output is not None:
                 output[k-first] = predicted
             states = keep_recent(np.concatenate((states[:, 1:], z[:, None]), axis=1), dataset.Nx + 1)
         if buffer:
-            score(buffer)
+            try:
+                score(buffer)
+            except FloatingPointError:
+                diverged_at = hi - first
+                buffer.clear()
         if output is not None:
             output.flush()
             del output
+        if diverged_at is not None:
+            result = metrics.result() if metrics.frames else {}
+            if ssim.count:
+                result.update(ssim.result())
+            result.update({"status": "diverged", "diverged_at_step": diverged_at,
+                           "first_predicted_index": first, "restart_every": restart_every})
+            results[case["name"]] = result
+            write_json(directory / f"metrics{suffix}.json", results)
+            continue
         result = {**metrics.result(), **ssim.result()}
-        result.update({"forecast_steps": hi-first, "first_predicted_index": first,
+        result.update({"status": "completed", "restart_every": restart_every,
+                       "forecast_steps": hi-first, "first_predicted_index": first,
                        "inference_seconds": elapsed, "seconds_per_step": elapsed/(hi-first),
                        "timing_scope": "latent transition + field decoding + inverse scaling; excludes initial encoding, IO, metrics",
                        "initialization": initialization, "Nx": dataset.Nx, "Ni": dataset.Ni})
@@ -195,7 +235,7 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
             q_pred, q_ref = [float(q) for q in q_pred], [float(q) for q in q_ref]
             result["heat_release_relative_l2"] = relative_l2(q_pred, q_ref)
             times = np.arange(first, hi)*metadata["dt"]
-            np.savez(directory / f"{case['name']}_Q.npz", time=times, reference=q_ref, predicted=q_pred)
+            np.savez(directory / f"{case['name']}_Q{suffix}.npz", time=times, reference=q_ref, predicted=q_pred)
             if case["waveform"] == "sine":
                 q0 = float(np.dot(np.asarray(cells(x[0])[q_index], dtype=np.float64), volumes))
                 result["gain_phase"] = gain_phase(q_pred, q_ref, phi[first:hi], times,
@@ -203,5 +243,5 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
         else:
             result["heat_release_status"] = "explicitly_disabled"
         results[case["name"]] = result
-        write_json(directory / "metrics.json", results)
+        write_json(directory / f"metrics{suffix}.json", results)
     return results

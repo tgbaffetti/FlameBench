@@ -187,15 +187,18 @@ def log_test(logger, results, metadata, directory):
     scalars = {}
     for name, result in results.items():
         gain_phase = result.get("gain_phase", {})
-        scalars.update({f"Test/{name}/nrmse": result["mean_nrmse"], f"Test/{name}/ssim": result.get("mean_ssim"),
+        # A diverged case reports only what it accumulated before breaking.
+        scalars.update({f"Test/{name}/nrmse": result.get("mean_nrmse"), f"Test/{name}/ssim": result.get("mean_ssim"),
                         f"Test/{name}/heat_release_l2": result.get("heat_release_relative_l2"),
                         f"Test/{name}/gain_error": gain_phase.get("relative_gain_error"),
                         f"Test/{name}/phase_error_deg": gain_phase.get("phase_error_deg"),
-                        f"Test/{name}/seconds_per_step": result["seconds_per_step"]})
+                        f"Test/{name}/seconds_per_step": result.get("seconds_per_step"),
+                        f"Test/{name}/diverged_at_step": result.get("diverged_at_step")})
     logger.log(scalars)
     fields = metadata["fields"]
     logger.table("Test/per_field_nrmse", ["case", *fields],
-                 [[name, *(result["field_nrmse"][field] for field in fields)] for name, result in results.items()])
+                 [[name, *(result["field_nrmse"][field] for field in fields)]
+                  for name, result in results.items() if "field_nrmse" in result])
     for name in results:
         path = Path(directory) / f"{name}_Q.npz"
         if path.exists():

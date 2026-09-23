@@ -757,3 +757,47 @@ def test_divergence_gate_bounds_validation_score(metadata,tmp_path):
     assert pipeline.validation_steps is None  # No per-step curve is reported for a gated score.
     # The reference is computed once per compressor and window shape.
     assert len(pipeline._frozen)==1
+
+
+def test_horizon_binned_metrics():
+    metrics=FieldMetrics(['a'],bin_edges=(2,))
+    reference=np.array([[[1.,2,3]]])
+    metrics.update_batch(np.repeat(reference,2,axis=0),np.repeat(reference,2,axis=0))  # steps 1-2: exact
+    metrics.update_batch(np.repeat(reference,2,axis=0)+1,np.repeat(reference,2,axis=0))  # steps 3+: unit error
+    result=metrics.result()
+    horizon=result['horizon_nrmse']
+    assert set(horizon)=={'1-2','3+'}
+    assert horizon['1-2']['mean_nrmse']==pytest.approx(0) and horizon['1-2']['frames']==2
+    unit=1/np.std(reference[0,0])
+    assert horizon['3+']['mean_nrmse']==pytest.approx(unit)
+    assert result['mean_nrmse']==pytest.approx(unit/np.sqrt(2))
+    with pytest.raises(ValueError,match='bin_edges'):
+        FieldMetrics(['a'],bin_edges=(5,2))
+
+
+def test_evaluate_divergence_status_and_restart_protocol(metadata,tmp_path):
+    scaler,pod=scaled_pod(metadata)
+    test_data=ForecasterDataset(metadata,'test',Nx=0,Ni=0)
+    class Amplifier:
+        def predict(self,states,forcing):
+            return np.asarray(states[:,-1])*10  # Nonfinite within a few dozen steps.
+    diverged=evaluate(Amplifier(),test_data,pod,scaler,tmp_path/'diverged')['sine']
+    assert diverged['status']=='diverged' and 0<diverged['diverged_at_step']<80
+    assert 'seconds_per_step' not in diverged  # Partial cases report no completed-only keys.
+    class Frozen:
+        def predict(self,states,forcing):
+            return np.asarray(states[:,-1]).copy()
+    free=evaluate(Frozen(),test_data,pod,scaler,tmp_path/'eval')['sine']
+    onestep=evaluate(Frozen(),test_data,pod,scaler,tmp_path/'eval',restart_every=1)['sine']
+    assert free['status']=='completed' and onestep['restart_every']==1
+    # Restarting from truth every step must beat holding the initial state forever.
+    assert onestep['mean_nrmse']<free['mean_nrmse']
+    assert (tmp_path/'eval'/'metrics.json').exists() and (tmp_path/'eval'/'metrics_restart1.json').exists()
+    assert (tmp_path/'eval'/'sine_Q.npz').exists() and (tmp_path/'eval'/'sine_Q_restart1.npz').exists()
+    with pytest.raises(ValueError,match='restart_every'):
+        evaluate(Frozen(),test_data,pod,scaler,tmp_path/'eval',restart_every=0)
+    # Diverged cases keep Test_Summary honest instead of vanishing from the means.
+    from Experiments.evaluation import summarize
+    summary=summarize({'sine':diverged,'other':free},metadata['cases'])
+    assert summary['Test_Summary/diverged_cases']==1
+    assert summary['Test_Summary/nrmse']==pytest.approx(free['mean_nrmse'])
