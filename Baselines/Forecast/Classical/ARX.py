@@ -43,13 +43,56 @@ class ARX(Model):
                 rhs += x.T @ y
         if gram is None:
             raise ValueError("Empty training loader")
-        penalty = np.diag(np.diag(gram)) * self.alpha
-        penalty[-1, -1] = 0  # The constant is not penalized.
+        penalty = np.diag(np.diag(gram) * self.penalties(len(gram)))
         self.weights = np.linalg.lstsq(gram + penalty, rhs, rcond=None)[0]
         return self
 
+    def penalties(self, columns):
+        """Dimensionless ridge weight of each feature, times its Gram energy in fit; the
+        constant is not penalized."""
+        values = np.full(columns, float(self.alpha))
+        values[-1] = 0.0
+        return values
+
     def predict(self, states, forcing):
         return (states[:, -1] + self.features(states, forcing) @ self.weights).astype(np.float32)
+
+
+class NARX(ARX):
+    """Control-affine NARX: the ARX increment fit plus state x forcing bilinear couplings.
+
+    x(t+1) = x(t) + W [x(t-Nx..t), phi - 1, (x kron (phi - 1)), 1]: linear in the state for
+    fixed phi, the control-affine structure of the forced-ROM literature (polynomial state
+    terms diverged in rollouts on the cell benchmark). The bilinear gain scales with the
+    forcing amplitude, so a model stable on the training amplitudes can diverge beyond them;
+    cross_alpha (default: alpha) penalizes only the bilinear block, energy-scaled like alpha,
+    trading forcing response for rollout stability.
+    """
+    name = "narx"
+    hyperparameters_ranges = {"alpha": {"type": "float", "low": 1e-8, "high": 1.0, "log": True},
+                              "cross_alpha": {"type": "float", "low": 1e-8, "high": 1e3, "log": True}}
+    dataset_ranges = {"horizon": 1}  # The closed-form fit is one-step.
+
+    def __init__(self, input_size=None, output_size=None, Nx=9, Ni=0, device="cpu", alpha=1e-4, cross_alpha=None):
+        super().__init__(input_size, output_size, Nx, Ni, device, alpha)
+        if cross_alpha is not None and cross_alpha < 0:
+            raise ValueError("cross_alpha must be nonnegative")
+        self.cross_alpha = cross_alpha
+
+    def features(self, states, forcing):
+        states, forcing = np.asarray(states), np.asarray(forcing)
+        recent_states = states[:, -self.Nx - 1:].reshape(len(states), -1)
+        recent_forcing = forcing[:, -self.Ni - 1:]
+        self.linear_width = recent_states.shape[1] + recent_forcing.shape[1]
+        cross = (recent_states[:, :, None] * recent_forcing[:, None, :]).reshape(len(states), -1)
+        return np.column_stack((recent_states, recent_forcing, cross, np.ones(len(states))))
+
+    def penalties(self, columns):
+        values = super().penalties(columns)
+        if self.cross_alpha is not None:
+            # Layout: [states | forcing | cross | 1]; linear_width was set by features in fit.
+            values[self.linear_width:-1] = float(self.cross_alpha)
+        return values
 
 
 class Constant(Model):

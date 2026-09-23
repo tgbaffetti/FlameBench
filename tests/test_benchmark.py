@@ -801,3 +801,36 @@ def test_evaluate_divergence_status_and_restart_protocol(metadata,tmp_path):
     summary=summarize({'sine':diverged,'other':free},metadata['cases'])
     assert summary['Test_Summary/diverged_cases']==1
     assert summary['Test_Summary/nrmse']==pytest.approx(free['mean_nrmse'])
+
+
+def test_narx_features_and_penalties():
+    from Baselines.Forecast.Classical.ARX import NARX
+    model=NARX(Nx=1,Ni=1,alpha=2.0,cross_alpha=50.0)
+    states=np.ones((3,2,2),dtype=np.float32)
+    forcing=np.full((3,2),0.5,dtype=np.float32)
+    f=model.features(states,forcing)
+    # states (Nx+1)*2 + forcing (Ni+1) + cross 4*2 + constant
+    assert f.shape==(3,4+2+8+1)
+    np.testing.assert_allclose(f[:,6:14],0.5)  # state(1) x forcing(0.5)
+    np.testing.assert_allclose(f[:,-1],1.0)
+    p=model.penalties(15)
+    np.testing.assert_allclose(p[:6],2.0)
+    np.testing.assert_allclose(p[6:14],50.0)  # Only the bilinear block gets cross_alpha.
+    assert p[-1]==0.0
+    # Default keeps a single dimensionless ridge, like ARX.
+    plain=NARX(Nx=1,Ni=1,alpha=2.0); plain.features(states,forcing)
+    np.testing.assert_allclose(plain.penalties(15)[:-1],2.0)
+    with pytest.raises(ValueError,match='cross_alpha'):
+        NARX(alpha=1.0,cross_alpha=-1)
+
+
+def test_narx_recovers_linear_system(metadata,tmp_path):
+    # The fixture system is linear, which the NARX features nest: accuracy must match ARX
+    # closely, with the bilinear block contributing nothing.
+    from Baselines.Forecast.Classical.ARX import NARX
+    scaler,pod=scaled_pod(metadata)
+    latent=ForecasterDataset(metadata,'train',Nx=0,Ni=1,scaler=scaler,compressor=pod)
+    model=NARX(Nx=0,Ni=1,alpha=1e-8).fit(DataLoader(latent,batch_size=8))
+    results=evaluate(model,ForecasterDataset(metadata,'test',Nx=0,Ni=1),pod,scaler,tmp_path/'eval')
+    assert results['sine']['status']=='completed'
+    assert results['sine']['mean_nrmse']<1e-4
