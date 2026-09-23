@@ -18,13 +18,13 @@
   },
   "dataset": {
     "Nx": 9,
-    "Ni": 0,
+    "Ni": 4,
     "horizon": 1
   },
   "forecaster": {
     "name": "narx",
-    "alpha": 0.0001,
-    "cross_alpha": 0.0001
+    "alpha": 30.0,
+    "cross_alpha": 30000.0
   },
   "logging": {
     "wandb": {
