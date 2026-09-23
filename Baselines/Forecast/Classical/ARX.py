@@ -13,6 +13,7 @@ class ARX(Model):
     ForecasterDataset sample never becomes a feature.
     """
     name = "arx"
+    deterministic = True
     hyperparameters_ranges = {"alpha": {"type": "float", "low": 1e-8, "high": 1.0, "log": True}}
     dataset_ranges = {"horizon": 1}  # The closed-form fit is one-step.
 
@@ -56,6 +57,7 @@ class Constant(Model):
     name = "constant"
     dataset_ranges = {"horizon": 1}
     trainable = False
+    deterministic = True
 
     def __init__(self, input_size=None, output_size=None, Nx=9, Ni=0, device="cpu"):
         self.Nx, self.Ni = Nx, Ni

@@ -153,9 +153,9 @@ class ForecasterDataset(Dataset):
     are frames (joint training). stride > 1 keeps every stride-th window only, e.g. stride = K
     gives back-to-back rollouts that compare each frame once (validation).
     """
-    hyperparameters_ranges = {"Nx": {"type": "int", "low": 0, "high": 10},
-                              "Ni": {"type": "int", "low": 0, "high": 10},
-                              "horizon": {"type": "categorical", "choices": [1, 5, 10, 20, 50]}}
+    hyperparameters_ranges = {"Nx": {"type": "int", "low": 0, "high": 20},
+                              "Ni": {"type": "int", "low": 0, "high": 20},
+                              "horizon": {"type": "categorical", "choices": [30, 40, 50, 60, 75]}}
 
     def __init__(self, metadata, partition, Nx=9, Ni=0, horizon=1, validation_fraction=0.2, blocks=20,
                  scaler=None, compressor=None, stride=1, batch_size=64):

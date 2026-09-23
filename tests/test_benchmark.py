@@ -162,15 +162,35 @@ def test_full_pipeline_and_hpo(metadata,tmp_path):
     with pytest.raises(FileExistsError): fit(cfg)
     # Only alpha is tuned: Nx and Ni are fixed here (the fixture blocks are short) and ARX fixes horizon 1.
     cfg.update(output=str(tmp_path/'hpo'),trials=2,dataset={'Nx':2,'Ni':1},forecaster={'name':'arx'})
-    best,results=hpo(cfg)
+    best,results=hpo(cfg,[0,1])
     assert best['dataset']=={'Nx':2,'Ni':1,'horizon':1}
     assert set(best['forecaster'])=={'name','alpha'} and best['compressor']=={'name':'pod','rank':2,'batch_size':8}
-    assert json.loads((run_directory(best)/'config.json').read_text())==best
-    assert np.isfinite(results['sine']['mean_nrmse'])
-    # hpo then refits the best config on all training data (seed 42) and tests it.
-    refitted=json.loads((tmp_path/'hpo'/'pod_arx_test_refit'/'seed_42'/'config.json').read_text())
-    assert refitted['validation_fraction']==0 and refitted['stage']=='refit'
-    assert (tmp_path/'hpo'/'pod_arx_test_refit'/'seed_42'/'metrics.json').exists()
+    # POD and ARX are deterministic: every seed would give the same model, so only the first runs.
+    assert set(results)=={0} and np.isfinite(results[0]['sine']['mean_nrmse'])
+    saved=json.loads((tmp_path/'hpo'/'pod_arx_test'/'seed_0'/'config.json').read_text())
+    assert saved=={**best,'seed':0} and saved['stage']=='fit' and saved['validation_fraction']==0.2
+    assert not (tmp_path/'hpo'/'pod_arx_test'/'seed_1').exists()
+    assert not (tmp_path/'hpo'/'pod_arx_test_refit').exists()
+
+
+def test_hpo_fits_deterministic_compressor_once(metadata,tmp_path,monkeypatch):
+    # POD is deterministic: the seeds reuse the first seed's POD; the GRU is fitted per seed.
+    import pickle
+    from Experiments.pipeline import Pipeline
+    path=tmp_path/'metadata.json';path.write_text(json.dumps(metadata))
+    cfg={'metadata':str(path),'output':str(tmp_path/'hpo'),'run_name':'pod_gru','seed':42,**SETTINGS,'trials':1,
+         'compressor':{'name':'pod','rank':2,'batch_size':8},'dataset':{'Nx':2,'Ni':1,'horizon':2},
+         'forecaster':{'name':'gru','hiddens':[4],'epochs':2,'patience':2,'lr':1e-3,'optimizer':'adam',
+                       'weight_decay':0.0,'dropout':0.0,'rollout_weight':0.5,'normalization':None}}
+    fits=[]
+    original=Pipeline.train_compressor
+    monkeypatch.setattr(Pipeline,'train_compressor',lambda self,*args,**kwargs: fits.append(1) or original(self,*args,**kwargs))
+    best,results=hpo(cfg,[0,1])
+    assert set(results)=={0,1} and len(fits)==2  # one in the HPO, one for seed 0
+    saved=[pickle.loads((tmp_path/'hpo'/'pod_gru'/f'seed_{seed}'/'preprocessing.pkl').read_bytes())[1] for seed in (0,1)]
+    np.testing.assert_array_equal(saved[0].U_r,saved[1].U_r)
+    networks=[pickle.loads((tmp_path/'hpo'/'pod_gru'/f'seed_{seed}'/'model.pkl').read_bytes())[2].network for seed in (0,1)]
+    assert any(not torch.equal(a,b) for a,b in zip(networks[0].state_dict().values(),networks[1].state_dict().values()))
 
 
 def test_refit_split_uses_every_frame(metadata):
@@ -199,7 +219,7 @@ def test_refit_keeps_optimizer_steps(metadata,tmp_path):
         directory=tmp_path/'run'/'pod_gru_refit'/f'seed_{seed}'
         assert json.loads((directory/'summary.json').read_text())['validation_field_mse'] is None
         summary=[json.loads(line) for line in (directory/'metrics.jsonl').read_text().splitlines() if 'summary' in line]
-        assert np.isfinite(summary[-1]['summary']['summary/test_nrmse'])
+        assert np.isfinite(summary[-1]['summary']['Test_Summary/nrmse'])
 
 
 def test_constant_baseline_repeats_initial_field(metadata,tmp_path):
@@ -450,8 +470,8 @@ def test_multi_seed_cli_layout(metadata,tmp_path,monkeypatch):
         assert (directory/'metrics.json').exists()
         assert (directory/'model.pkl').exists()
         records=[json.loads(line) for line in (directory/'metrics.jsonl').read_text().splitlines()]
-        assert any('validation/field_mse' in row for row in records)
-        assert any('test/sine/mean_nrmse' in row for row in records)
+        assert any('Validation/field_mse' in row for row in records)
+        assert any('Test/sine/nrmse' in row for row in records)
         assert list((directory/'tensorboard').glob('events.*'))
         assert not (directory/'evaluation').exists()
     # Resume the named seed in place; never create another timestamp.
@@ -481,13 +501,23 @@ def test_wandb_seed_group_and_resume_id(tmp_path,monkeypatch):
     monkeypatch.setenv('WANDB_MODE','online')
     init=Mock(return_value=Mock())
     monkeypatch.setattr(wandb,'init',init)
-    cfg={'run_name':'pod_gru_timestamp','seed':3,'logging':{'wandb':{'mode':'online'}}}
+    cfg={'run_name':'pod_gru_timestamp','seed':3,'stage':'fit','compressor':{'name':'pod'},'forecaster':{'name':'gru'},
+         'logging':{'wandb':{'mode':'online','tags':['benchmark-v2']}}}
     directory=tmp_path/cfg['run_name']/'seed_3'
     logger=ExperimentLogger(directory,cfg)
-    logger.close()
+    logger.summary({'Test_Summary/nrmse':0.2,'Test_Summary/ssim':None})
     first=init.call_args.kwargs
-    assert first['group']=='pod_gru_timestamp'
-    assert first['name']=='pod_gru_timestamp/seed_3'
+    # One W&B group per model: its HPO run and every seed.
+    assert first['group']=='pod_gru' and first['config']['model_name']=='pod_gru'
+    assert first['name']=='pod_gru_timestamp/seed_3' and first['job_type']=='fit'
+    assert first['tags']==['benchmark-v2','fit']
+    # Summaries also enter the history, where W&B builds its automatic panels; None is skipped.
+    init.return_value.log.assert_called_with({'Test_Summary/nrmse':0.2})
+    # A curve gets its own x-axis.
+    logger.log({'Train/forecaster_loss':0.5},3,axis='Train/forecaster_epoch')
+    init.return_value.define_metric.assert_called_with('Train/forecaster_loss',step_metric='Train/forecaster_epoch')
+    init.return_value.log.assert_called_with({'Train/forecaster_epoch':3,'Train/forecaster_loss':0.5})
+    logger.close()
     logger=ExperimentLogger(directory,cfg,resume=True)
     logger.close()
     assert init.call_args.kwargs['id']==first['id']
@@ -579,14 +609,14 @@ def test_validation_horizon_longer_than_training():
     class Logger:
         def __init__(self):
             self.rows=[]
-        def log(self,values,step):
-            self.rows.append(values)
+        def log(self,values,step=0,axis=None):
+            self.rows.append((values,step,axis))
     train=DataLoader(windows(torch.randn(8,3,2),torch.zeros(8,4),torch.randn(8,2,2)),batch_size=4)
     val=DataLoader(windows(torch.randn(8,3,2),torch.zeros(8,7),torch.randn(8,5,2)),batch_size=4)
     logger=Logger()
-    small(GRU,2,Nx=2,epochs=1).fit(train,val,logger=logger)
-    keys=[key for key in logger.rows[0] if key.startswith('validation/latent_step_')]
-    assert len(keys)==5
+    small(GRU,2,Nx=2,epochs=2).fit(train,val,logger=logger)
+    assert [(step,axis) for _,step,axis in logger.rows]==[(1,'Train/forecaster_epoch'),(2,'Train/forecaster_epoch')]
+    assert all(np.isfinite(values['Validation/forecaster_loss']) for values,_,_ in logger.rows)
 
 
 def test_configurable_loader_preserves_frames_and_reuses_workers(metadata, monkeypatch):
@@ -668,3 +698,41 @@ def test_field_ssim():
     noisy = FieldSSIM(['a', 'b'], mask, np.ptp(reference, axis=(1, 2)))
     noisy.update(reference + rng.normal(size=reference.shape), reference)
     assert all(value < 0.9 for value in noisy.result()['field_ssim'].values())
+
+
+@pytest.mark.parametrize('shape',[(3,2),(20,13)])
+def test_batched_ssim_matches_scipy(shape):
+    # The torch SSIM (batched, GPU-capable) reproduces the per-frame scipy computation it replaced.
+    from scipy.ndimage import gaussian_filter
+    rng=np.random.default_rng(0)
+    mask=rng.random(shape)>0.2
+    reference=rng.normal(size=(5,3,*shape));predicted=reference+0.3*rng.normal(size=reference.shape)
+    data_range=np.ptp(reference,axis=(0,2,3))
+    c1,c2=((0.01*data_range)**2)[:,None,None],((0.03*data_range)**2)[:,None,None]
+    blur=lambda x:gaussian_filter(x,1.5,truncate=3.5,axes=(1,2))
+    expected=[]
+    for p,r in zip(predicted,reference):
+        p,r=np.where(mask,p,0),np.where(mask,r,0)
+        mp,mr=blur(p),blur(r);vp,vr=blur(p*p)-mp**2,blur(r*r)-mr**2;cov=blur(p*r)-mp*mr
+        expected.append((((2*mp*mr+c1)*(2*cov+c2))/((mp**2+mr**2+c1)*(vp+vr+c2)))[:,mask].mean(axis=1))
+    ssim=FieldSSIM(['a','b','c'],mask,data_range);ssim.update_batch(predicted,reference)
+    np.testing.assert_allclose(list(ssim.result()['field_ssim'].values()),np.mean(expected,axis=0),rtol=0,atol=1e-12)
+
+
+def test_parallel_hpo_and_seeds(metadata,tmp_path):
+    # parallel 2: trials of each stage and the seed fits run in worker processes (spawn).
+    import pickle
+    path=tmp_path/'metadata.json';path.write_text(json.dumps(metadata))
+    cfg={'metadata':str(path),'output':str(tmp_path/'hpo'),'run_name':'pod_gru','seed':42,**SETTINGS,'trials':3,
+         'parallel':2,'compressor':{'name':'pod','batch_size':8},'dataset':{'Nx':2,'Ni':1,'horizon':2},
+         'forecaster':{'name':'gru','hiddens':[4],'epochs':2,'patience':2,'optimizer':'adam','weight_decay':0.0,
+                       'dropout':0.0,'rollout_weight':0.5,'normalization':None}}
+    best,results=hpo(cfg,[0,1,2])
+    assert set(results)=={0,1,2} and all(np.isfinite(r['sine']['mean_nrmse']) for r in results.values())
+    assert 1<=best['compressor']['rank']<=8 and 'lr' in best['forecaster']
+    rows=[json.loads(line) for line in (tmp_path/'hpo'/'pod_gru'/'hpo'/'metrics.jsonl').read_text().splitlines()]
+    trials=[row for row in rows if row.get('table')=='HPO/stage2/trials'][0]['rows']
+    assert sum(row[1]=='complete' for row in trials)==3
+    # POD comes from seed 0 in every seed.
+    bases=[pickle.loads((tmp_path/'hpo'/'pod_gru'/f'seed_{seed}'/'preprocessing.pkl').read_bytes())[1].U_r for seed in (0,1,2)]
+    assert all(np.array_equal(bases[0],basis) for basis in bases[1:])

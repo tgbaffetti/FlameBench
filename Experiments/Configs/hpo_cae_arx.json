@@ -3,21 +3,24 @@
   "output": "Experiments/Results",
   "seed": 42,
   "device": "cuda",
-  "cpu_threads": 4,
+  "cpu_threads": 1,
   "validation_fraction": 0.3,
   "blocks": 20,
   "K_eval": 150,
-  "trials": 30,
-  "batch_size": 64,
+  "trials": 20,
+  "batch_size": 256,
   "joint_batch_size": 8,
   "workers": 0,
-  "in_memory": true,
+  "in_memory": false,
   "preprocessing_batch_size": 256,
   "logging": {
     "wandb": {
       "mode": "offline",
       "project": "rom-flamebench",
-      "entity": "FireMark"
+      "entity": "FireMark",
+      "tags": [
+        "benchmark-v2"
+      ]
     }
   },
   "evaluation": {
@@ -28,11 +31,11 @@
   },
   "compressor": {
     "name": "cae",
-    "rank": 16,
     "epochs": 20
   },
   "dataset": {},
   "forecaster": {
     "name": "arx"
-  }
+  },
+  "parallel": 3
 }

@@ -59,6 +59,7 @@ class AE(Compressor):
     """
     hyperparameters_ranges = {"lr": {"type": "float", "low": 1e-4, "high": 3e-3, "log": True},
                               "batch_size": {"type": "categorical", "choices": [8, 16, 32]}}
+    rank_range = {"type": "categorical", "choices": [8, 16, 32, 64]}
 
     def __init__(self, rank=16, epochs=20, batch_size=16, lr=1e-3, device="cpu", beta=0.0, loss="mse"):
         if beta < 0:
@@ -128,7 +129,7 @@ class AE(Compressor):
                 self.best_epochs = epoch + 1
                 epochs.set_postfix(train=total / count)
                 if logger:
-                    logger.log({"compressor/train_loss": total/count}, epoch)
+                    logger.log({"Train/compressor_loss": total/count}, epoch + 1, axis="Train/compressor_epoch")
                 continue
             sse = n = 0
             with torch.no_grad():
@@ -147,7 +148,8 @@ class AE(Compressor):
                               for module in (self.encoder, self.decoder)]
             epochs.set_postfix(train=total / count, validation=value)
             if logger:
-                logger.log({"compressor/train_loss": total/count, "compressor/validation_mse": value}, epoch)
+                logger.log({"Train/compressor_loss": total/count, "Validation/compressor_mse": value}, epoch + 1,
+                           axis="Train/compressor_epoch")
         if best_state is None:
             raise ValueError("No compressor training epochs completed")
         for module, state in zip((self.encoder, self.decoder), best_state):

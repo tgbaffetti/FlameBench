@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# Full protocol for each compressor-forecaster pair (see Experiments/run.py): HPO with the config
-# seed, fit and test of the best config, then refit on all training data with seeds 0 1 2, each
-# tested. "constant" is the constant baseline (identity compressor), which has nothing to tune.
+# Benchmark protocol for each compressor-forecaster pair (see Experiments/run.py): HPO with the
+# config seed, then the best config fitted and tested with each of $SEEDS (default 0-9). POD is
+# fitted once and reused by every seed; POD + ARX is fully deterministic and runs one seed.
+# "constant" is the constant baseline (identity compressor): nothing to tune, one seed.
 #
 # Usage, from the repository root inside a screen session:
 #   Experiments/scripts/hpo.sh                  # every pair and the constant baseline
 #   Experiments/scripts/hpo.sh pod_arx cae_gru  # only these
-# Pairs are spread over the GPUs in $GPUS (default: every GPU nvidia-smi lists); each GPU runs
-# its pairs one after another. One log per pair in logs/. A failed pair does not stop the others.
+# Pairs are spread over the GPUs in $GPUS (default: every GPU nvidia-smi lists), $JOBS_PER_GPU
+# pairs at a time per GPU (default: enough to start every pair at once; the small models leave
+# the GPUs mostly idle). Each pair also runs "parallel" (config) trials or seeds at a time.
+# One log per pair in logs/. A failed pair does not stop the others.
 set -uo pipefail
 python_bin="${PYTHON:-python}"
+read -r -a seeds <<< "${SEEDS:-0 1 2 3 4 5 6 7 8 9}"
 if (( $# )); then
     pairs=("$@")
 else
@@ -22,13 +26,16 @@ else
 fi
 read -r -a gpus <<< "${GPUS:-$(nvidia-smi --query-gpu=index --format=csv,noheader | tr '\n' ' ')}"
 (( ${#gpus[@]} )) || { echo "No GPU found; set GPUS" >&2; exit 1; }
+per_gpu=${JOBS_PER_GPU:-$(( (${#pairs[@]} + ${#gpus[@]} - 1) / ${#gpus[@]} ))}
+slots=()  # one entry per concurrent worker, interleaved (0 1 2 0 1 2 ...) to mix heavy and light pairs
+for (( k = 0; k < per_gpu; k++ )); do slots+=("${gpus[@]}"); done
 mkdir -p logs
 
 run_pair() {
     if [[ $1 == constant ]]; then
         "$python_bin" -m Experiments.run run --config Experiments/Configs/identity_constant.json
     else
-        "$python_bin" -m Experiments.run hpo --config "Experiments/Configs/hpo_$1.json" --seeds 0 1 2
+        "$python_bin" -m Experiments.run hpo --config "Experiments/Configs/hpo_$1.json" --seeds "${seeds[@]}"
     fi
 }
 
@@ -50,12 +57,12 @@ worker() {  # worker <gpu> <pair>...: the pairs of one GPU, in order
 # Background jobs of a script ignore Ctrl-C, so stop every worker and its Python explicitly.
 trap 'trap - INT TERM; kill 0' INT TERM
 pids=()
-for i in "${!gpus[@]}"; do
+for i in "${!slots[@]}"; do
     share=()
-    for (( j = i; j < ${#pairs[@]}; j += ${#gpus[@]} )); do
+    for (( j = i; j < ${#pairs[@]}; j += ${#slots[@]} )); do
         share+=("${pairs[$j]}")
     done
-    (( ${#share[@]} )) && { worker "${gpus[$i]}" "${share[@]}" & pids+=("$!"); }
+    (( ${#share[@]} )) && { worker "${slots[$i]}" "${share[@]}" & pids+=("$!"); }
 done
 status=0
 for pid in "${pids[@]}"; do

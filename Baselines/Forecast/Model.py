@@ -14,6 +14,7 @@ class Model(ABC):
     hyperparameters_ranges = {}
     dataset_ranges = {}
     trainable = True  # False: fit learns nothing from data, so training windows are not encoded.
+    deterministic = False  # True: the same data give the same fit for every seed (closed form).
 
     @classmethod
     def build(cls, hyperparameters, **context):

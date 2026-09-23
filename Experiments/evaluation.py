@@ -32,15 +32,16 @@ def reconstruction_error(compressor, dataset, batch_size=16, loader_options=None
     return sse / count
 
 
-def validation_error(forecaster, compressor, dataset, batch_size=16, loader_options=None):
+def validation_error(forecaster, compressor, dataset, batch_size=16, loader_options=None, per_step=False):
     """MSE of recursive forecasts on a scaled image ForecasterDataset, valid pixels only.
 
     Image windows are encoded before rollout. Latent windows from a compressed ForecasterDataset
     are used directly, but still score against the corresponding scaled image targets. Use stride =
     horizon for image validation so every frame is compared once. A diverged forecast scores
-    infinity.
+    infinity. With per_step, return (MSE, list of the MSE at each rollout step; None if diverged).
     """
     sse = count = 0
+    step_sse, step_count = np.zeros(dataset.horizon), np.zeros(dataset.horizon)
     latent_dataset = getattr(dataset, "latents", None) is not None
     loader = make_loader(dataset, batch_size, **(loader_options or {}))
     for batch_index, batch in enumerate(tqdm(loader, desc="Validation error")):
@@ -57,19 +58,22 @@ def validation_error(forecaster, compressor, dataset, batch_size=16, loader_opti
         for step in range(target.shape[1]):
             predicted = forecaster.predict(states, keep_recent(forcing[:, step:step + length], dataset.Ni + 1))
             if not np.isfinite(predicted).all():
-                return float("inf")
+                return (float("inf"), None) if per_step else float("inf")
             error = (compressor.decode(predicted) - target_fields[:, step])[..., dataset.mask]
-            sse += float(np.square(error, dtype=np.float64).sum())
+            squares = float(np.square(error, dtype=np.float64).sum())
+            sse += squares
             count += error.size
+            step_sse[step] += squares
+            step_count[step] += error.size
             states = keep_recent(np.concatenate((states[:, 1:], predicted[:, None]), axis=1), dataset.Nx + 1)
-    return sse / count
+    return (sse / count, list(step_sse / step_count)) if per_step else sse / count
 
 
-def summarize(results, cases, validation_field_mse=None):
-    """The few numbers that rank runs, from the per-case test results of evaluate.
+def summarize(results, cases):
+    """The few numbers that rank runs (Test_Summary/...), from the per-case test results of evaluate.
 
-    test_nrmse and test_ssim average mean_nrmse and mean_ssim over the test cases; test_nrmse_worst
-    is the worst case. heat_release_l2 averages the relative L2 error of integrated Q. Sine
+    nrmse and ssim average mean_nrmse and mean_ssim over the test cases; nrmse_worst is the worst
+    case. heat_release_l2 averages the relative L2 error of integrated Q. Sine
     cases are grouped by forcing frequency: gain_error_<f>hz averages the relative gain error and
     phase_error_<f>hz the absolute phase error in degrees, because models can be right at one
     frequency and wrong at another. Missing values (e.g. heat release disabled) are skipped.
@@ -79,19 +83,18 @@ def summarize(results, cases, validation_field_mse=None):
         return float(np.mean(values)) if values else None
 
     nrmse = [r["mean_nrmse"] for r in results.values() if r.get("mean_nrmse") is not None]
-    summary = {"summary/val_field_mse": validation_field_mse,
-               "summary/test_nrmse": mean(nrmse),
-               "summary/test_nrmse_worst": max(nrmse) if nrmse else None,
-               "summary/test_ssim": mean(r.get("mean_ssim") for r in results.values()),
-               "summary/heat_release_l2": mean(r.get("heat_release_relative_l2") for r in results.values()),
-               "summary/seconds_per_step": mean(r.get("seconds_per_step") for r in results.values())}
+    summary = {"Test_Summary/nrmse": mean(nrmse),
+               "Test_Summary/nrmse_worst": max(nrmse) if nrmse else None,
+               "Test_Summary/ssim": mean(r.get("mean_ssim") for r in results.values()),
+               "Test_Summary/heat_release_l2": mean(r.get("heat_release_relative_l2") for r in results.values()),
+               "Test_Summary/seconds_per_step": mean(r.get("seconds_per_step") for r in results.values())}
     frequencies = {case["name"]: case["frequency_hz"] for case in cases if case.get("waveform") == "sine"}
     for frequency in sorted(set(frequencies.values())):
         gain_phase = [results[name].get("gain_phase", {}) for name, f in frequencies.items()
                       if f == frequency and name in results]
         phase = [g.get("phase_error_deg") for g in gain_phase]
-        summary[f"summary/gain_error_{frequency:g}hz"] = mean(g.get("relative_gain_error") for g in gain_phase)
-        summary[f"summary/phase_error_{frequency:g}hz"] = mean(abs(p) for p in phase if p is not None)
+        summary[f"Test_Summary/gain_error_{frequency:g}hz"] = mean(g.get("relative_gain_error") for g in gain_phase)
+        summary[f"Test_Summary/phase_error_{frequency:g}hz"] = mean(abs(p) for p in phase if p is not None)
     return summary
 
 
@@ -99,6 +102,9 @@ def synchronize(model):
     device = getattr(model, "device", None)
     if device is not None and torch.device(device).type == "cuda":
         torch.cuda.synchronize(device)
+
+
+METRIC_BATCH = 128  # Test frames per metric batch: batched SSIM (on the GPU when present) is far faster.
 
 
 def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
@@ -142,8 +148,21 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
             chunk = cells(np.asarray(x[start:min(start + 256, hi)]))
             low = chunk.min(axis=(0, 2)) if low is None else np.minimum(low, chunk.min(axis=(0, 2)))
             high = chunk.max(axis=(0, 2)) if high is None else np.maximum(high, chunk.max(axis=(0, 2)))
-        ssim = FieldSSIM(metadata["fields"], dataset.mask, high - low)
+        ssim = FieldSSIM(metadata["fields"], dataset.mask, high - low,
+                         device="cuda" if torch.cuda.is_available() else "cpu")
         q_ref, q_pred = [], []
+        buffer = []  # (predicted, reference) frames; metrics run in batches of METRIC_BATCH frames
+
+        def score(frames):
+            predicted, reference = (np.stack(side) for side in zip(*frames))
+            predicted_cells, reference_cells = cells(predicted), cells(reference)
+            metrics.update_batch(predicted_cells, reference_cells)
+            ssim.update_batch(predicted, reference)
+            if volumes is not None:
+                q_pred.extend(predicted_cells[:, q_index].astype(np.float64) @ volumes)
+                q_ref.extend(reference_cells[:, q_index].astype(np.float64) @ volumes)
+            frames.clear()
+
         output = None
         if save_predictions:
             output = np.lib.format.open_memmap(directory / f"{case['name']}_predictions.npy", mode="w+",
@@ -156,15 +175,14 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
             predicted = scaler.inverse(compressor.decode(z))[0]
             synchronize(model)
             elapsed += time.perf_counter()-begin
-            reference = np.array(x[k])
-            metrics.update(cells(predicted), cells(reference))
-            ssim.update(predicted, reference)
+            buffer.append((predicted, np.array(x[k])))
+            if len(buffer) == METRIC_BATCH:
+                score(buffer)
             if output is not None:
                 output[k-first] = predicted
-            if volumes is not None:
-                q_pred.append(float(np.dot(cells(predicted)[q_index].astype(np.float64), volumes)))
-                q_ref.append(float(np.dot(cells(reference)[q_index].astype(np.float64), volumes)))
             states = keep_recent(np.concatenate((states[:, 1:], z[:, None]), axis=1), dataset.Nx + 1)
+        if buffer:
+            score(buffer)
         if output is not None:
             output.flush()
             del output
@@ -174,6 +192,7 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
                        "timing_scope": "latent transition + field decoding + inverse scaling; excludes initial encoding, IO, metrics",
                        "initialization": initialization, "Nx": dataset.Nx, "Ni": dataset.Ni})
         if volumes is not None:
+            q_pred, q_ref = [float(q) for q in q_pred], [float(q) for q in q_ref]
             result["heat_release_relative_l2"] = relative_l2(q_pred, q_ref)
             times = np.arange(first, hi)*metadata["dt"]
             np.savez(directory / f"{case['name']}_Q.npz", time=times, reference=q_ref, predicted=q_pred)

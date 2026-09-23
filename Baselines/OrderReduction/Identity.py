@@ -9,6 +9,7 @@ from .Compressor import Compressor
 
 class Identity(Compressor):
     name = "identity"
+    deterministic = True
 
     def __init__(self, device=None):
         self.device = device or "cpu"

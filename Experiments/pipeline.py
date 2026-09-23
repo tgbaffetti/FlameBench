@@ -24,6 +24,7 @@ class Pipeline:
         self.loader_options = {"num_workers": config.get("workers", 0), **config.get("dataloader", {})}
         self.scaler = None
         self.refit = self.split["validation_fraction"] == 0
+        self.validation_steps = None  # Field MSE at each rollout step of the last validation_error.
 
     def loader(self, dataset, shuffle=False, batch_size=None):
         return make_loader(dataset, batch_size=batch_size or self.config.get("batch_size", 64), shuffle=shuffle,
@@ -88,4 +89,6 @@ class Pipeline:
         if self.refit:
             return None
         dataset = self.windows(dataset_class, dataset_hyperparameters, "validation", validation=True)
-        return validation_error(forecaster, compressor, dataset, self.joint_batch_size, self.loader_options)
+        error, self.validation_steps = validation_error(forecaster, compressor, dataset, self.joint_batch_size,
+                                                        self.loader_options, per_step=True)
+        return error

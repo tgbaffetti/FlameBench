@@ -19,6 +19,8 @@ class POD(Compressor):
     """
     name = "pod"
     rank_range = {"type": "int", "low": 8, "high": 128, "log": True}
+    nested_ranks = True
+    deterministic = True  # Fixed SVD seed (random_state 42).
 
     def __init__(self, rank=16, batch_size=64, device=None, backend="sklearn"):
         if rank < 1 or batch_size < 1:

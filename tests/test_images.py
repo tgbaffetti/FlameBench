@@ -144,7 +144,7 @@ def test_joint_training_updates_compressor(tmp_path):
                                                     tuned.encoder.state_dict().values())]
     assert any(changed)
     rows = (directory / 'metrics.jsonl').read_text()
-    assert 'joint/validation_field_loss' in rows and 'validation/field_mse' in rows
+    assert 'Validation/joint_loss' in rows and 'Validation/field_mse' in rows and 'Validation/error_vs_step' in rows
     assert set(test(config)) == {'test'}
 
 
@@ -297,6 +297,17 @@ def test_hpo_tunes_pod_rank_and_skips_infeasible(tmp_path):
     assert max(best['dataset']['Nx'], best['dataset']['Ni']) == 4
 
 
+def test_hpo_compressor_only(tmp_path):
+    # Without a forecaster POD is fitted at its largest rank (smaller ranks are truncations), and
+    # a trained compressor alone leaves nothing to tune.
+    from Experiments.HPO import optimize
+    config = hpo_config(tmp_path)
+    config['compressor'] = {}
+    assert optimize(config, POD)['compressor']['rank'] == POD.rank_range['high']
+    with pytest.raises(ValueError):
+        optimize(config, compressor=POD(rank=2))
+
+
 def test_summarize_groups_sine_frequencies():
     from Experiments.evaluation import summarize
     cases = [dict(name='a', waveform='sine', frequency_hz=10), dict(name='b', waveform='sine', frequency_hz=40),
@@ -306,12 +317,11 @@ def test_summarize_groups_sine_frequencies():
                'b': dict(mean_nrmse=0.3, mean_ssim=0.7, heat_release_relative_l2=0.4, seconds_per_step=1.0,
                          gain_phase=dict(relative_gain_error=0.5, phase_error_deg=20.0)),
                'c': dict(mean_nrmse=0.2, mean_ssim=0.8, seconds_per_step=1.0)}
-    summary = summarize(results, cases, validation_field_mse=0.01)
-    assert summary['summary/test_nrmse'] == pytest.approx(0.2)
-    assert summary['summary/test_nrmse_worst'] == 0.3
-    assert summary['summary/heat_release_l2'] == pytest.approx(0.3)
-    assert summary['summary/phase_error_10hz'] == 5.0 and summary['summary/gain_error_40hz'] == 0.5
-    assert summary['summary/val_field_mse'] == 0.01
+    summary = summarize(results, cases)
+    assert summary['Test_Summary/nrmse'] == pytest.approx(0.2)
+    assert summary['Test_Summary/nrmse_worst'] == 0.3
+    assert summary['Test_Summary/heat_release_l2'] == pytest.approx(0.3)
+    assert summary['Test_Summary/phase_error_10hz'] == 5.0 and summary['Test_Summary/gain_error_40hz'] == 0.5
 
 
 @pytest.mark.parametrize('cls', [CAE, ViTAE])
@@ -333,3 +343,110 @@ def test_autoencoder_reconstructs_constant_pixels_exactly(tmp_path, cls):
     x = np.stack([f.numpy() for f in CompressorDataset(metadata, 'test', **split)])
     reconstructed = compressor.decode(compressor.encode(x))
     np.testing.assert_array_equal(reconstructed[:, 1][:, raw.mask], x[:, 1][:, raw.mask])
+
+
+def test_hpo_tunes_autoencoder_at_each_rank(tmp_path, monkeypatch):
+    # Stage 1 tunes the autoencoder separately at every rank choice; stage 2 picks the rank on the
+    # forecast objective and reuses that rank's tuned autoencoder without training another one.
+    from Experiments.HPO import optimize
+    from Experiments.pipeline import Pipeline
+    from Baselines.Forecast.Classical.ARX import ARX
+    trained = []
+    original = Pipeline.train_compressor
+
+    def recording(self, compressor_class, hyperparameters, logger=None):
+        compressor, error = original(self, compressor_class, hyperparameters, logger)
+        trained.append((hyperparameters['rank'], hyperparameters.get('lr'), error))
+        return compressor, error
+
+    monkeypatch.setattr(Pipeline, 'train_compressor', recording)
+    monkeypatch.setattr(CAE, 'rank_range', {'type': 'categorical', 'choices': [1, 2]})
+    config = hpo_config(tmp_path)
+    config['compressor'] = {'epochs': 1, 'channels': [2], 'kernel_size': 3, 'padding': 1, 'batch_size': 4}
+    config['dataset'], config['forecaster'] = {'Nx': 1, 'Ni': 0}, {}
+    best = optimize(config, CAE, ARX)
+    assert [rank for rank, _, _ in trained] == [1, 1, 2, 2]  # 2 trials per rank, none in stage 2
+    rank = best['compressor']['rank']
+    at_rank = [(lr, error) for r, lr, error in trained if r == rank]
+    assert best['compressor']['lr'] == min(at_rank, key=lambda item: item[1])[0]
+
+
+def test_hpo_drops_a_rank_where_every_trial_fails(tmp_path, monkeypatch):
+    # Every stage-1 trial at rank 2 diverges: the pair still finishes, with rank 1.
+    from Experiments.HPO import optimize
+    from Experiments.pipeline import Pipeline
+    from Baselines.Forecast.Classical.ARX import ARX
+    original = Pipeline.train_compressor
+
+    def diverging(self, compressor_class, hyperparameters, logger=None):
+        compressor, error = original(self, compressor_class, hyperparameters, logger)
+        return compressor, float('nan') if hyperparameters['rank'] == 2 else error
+
+    monkeypatch.setattr(Pipeline, 'train_compressor', diverging)
+    monkeypatch.setattr(CAE, 'rank_range', {'type': 'categorical', 'choices': [1, 2]})
+    config = hpo_config(tmp_path)
+    config['compressor'] = {'epochs': 1, 'channels': [2], 'kernel_size': 3, 'padding': 1, 'batch_size': 4}
+    config['dataset'], config['forecaster'] = {'Nx': 1, 'Ni': 0}, {}
+    assert optimize(config, CAE, ARX)['compressor']['rank'] == 1
+
+
+def test_stage_one_cache_is_shared_between_pairs(tmp_path, monkeypatch):
+    # Stage 1 does not depend on the forecaster: a second pair with the same compressor settings
+    # reuses the cached autoencoders instead of training them again.
+    from Experiments.HPO import optimize
+    from Experiments.pipeline import Pipeline
+    from Baselines.Forecast.Classical.ARX import ARX
+    from Baselines.Forecast.DL.networks import GRU
+    trained = []
+    original = Pipeline.train_compressor
+    monkeypatch.setattr(Pipeline, 'train_compressor',
+                        lambda self, *args, **kwargs: trained.append(1) or original(self, *args, **kwargs))
+    monkeypatch.setattr(CAE, 'rank_range', {'type': 'categorical', 'choices': [1, 2]})
+    config = hpo_config(tmp_path)
+    config.update(output=str(tmp_path / 'runs'), trials=1)
+    config['compressor'] = {'epochs': 1, 'channels': [2], 'kernel_size': 3, 'padding': 1, 'batch_size': 4}
+    config['dataset'], config['forecaster'] = {'Nx': 1, 'Ni': 0}, {}
+    first = optimize(config, CAE, ARX)
+    assert len(trained) == 2 and len(list((tmp_path / 'runs' / 'hpo_cache').iterdir())) == 2
+    config['dataset'], config['forecaster'] = {'Nx': 1, 'Ni': 0, 'horizon': 3}, {'hiddens': [4], 'epochs': 1, 'patience': 5,
+                                                                                  'joint_epochs': 0}
+    second = optimize(config, CAE, GRU)
+    assert len(trained) == 2
+    assert {k: v for k, v in second['compressor'].items() if k != 'rank'} == \
+        {k: v for k, v in first['compressor'].items() if k != 'rank'}
+    # Different compressor settings are a different cache entry.
+    config['compressor']['epochs'] = 2
+    config['dataset'], config['forecaster'] = {'Nx': 1, 'Ni': 0}, {}
+    optimize(config, CAE, ARX)
+    assert len(trained) == 4
+
+
+def test_stage_one_cache_skips_a_rank_being_tuned(tmp_path):
+    # While one process tunes a rank (holding its lock), another asking without waiting gets
+    # None and can tune a different rank; asking again later returns the stored result.
+    from types import SimpleNamespace
+    from Experiments.HPO import stage_one_cache
+    pipeline = SimpleNamespace(split={'validation_fraction': 0.3, 'blocks': 20}, metadata={'cases': []}, device='cpu')
+    config = {'output': str(tmp_path)}
+    args = (config, pipeline, POD, {}, 8, 1, 0)
+    inner = []
+
+    def tune():
+        inner.append(stage_one_cache(*args, tune=lambda: pytest.fail('tuned twice'), wait=False))
+        return {'rank': 8}, 'compressor'
+
+    assert stage_one_cache(*args, tune=tune) == ({'rank': 8}, 'compressor')
+    assert inner == [None]
+    assert stage_one_cache(*args, tune=lambda: pytest.fail('not cached'), wait=False) == ({'rank': 8}, 'compressor')
+
+
+def test_parallel_autoencoder_stages(tmp_path):
+    # Stage 1 at each rank, stage 2 and the joint stage 3 with trials in 2 worker processes.
+    from Experiments.HPO import optimize
+    from Baselines.Forecast.DL.networks import GRU
+    config = hpo_config(tmp_path)
+    config.update(trials=2, parallel=2)
+    config['compressor'] = {'epochs': 1, 'channels': [2], 'kernel_size': 3, 'padding': 1, 'batch_size': 4}
+    best = optimize(config, CAE, GRU)
+    assert best['compressor']['rank'] in CAE.rank_range['choices']
+    assert best['forecaster']['joint_epochs'] in [5, 10, 20] and 'joint_lr' in best['forecaster']

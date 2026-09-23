@@ -4,18 +4,26 @@ A config has three sections, each a class name plus constructor keywords: compre
 (Nx, Ni, horizon of the training windows) and forecaster. For hpo, write only the values to keep
 fixed; the others are tuned (see Experiments/HPO.py).
 
-hpo runs the whole protocol of one compressor-forecaster pair:
+hpo runs the benchmark protocol of one compressor-forecaster pair, the same for every model:
   1. tune on the training/validation split (config seed);
-  2. fit the best config on the same split and test it (run_name, stage "fit");
-  3. refit the best config on all training data, once per seed, and test each (run_name + "_refit",
-     stage "refit"). Without validation nothing can stop training early, so each neural stage
-     trains for the number of optimizer steps at which step 2 kept its weights; see refit().
-refit repeats step 3 alone from a config fitted by fit or hpo.
+  2. fit the best config on the same split once per seed, with early stopping on validation, and
+     test each (run_name/seed_N, stage "fit"); config["parallel"] seeds run at a time. A deterministic part gives the same fit for every
+     seed, so it is not fitted again: a deterministic compressor (POD) is fitted with the first
+     seed and reused by the others, and when the forecaster (ARX) is deterministic too the whole
+     model is, so only the first seed is run. A deterministic forecaster on a stochastic
+     compressor (CAE + ARX) is still fitted per seed, because its input latents differ.
+refit is an ablation, not part of the protocol: it refits a fitted config on all training data
+(run_name + "_refit", stage "refit"). Without validation nothing can stop training early, so each
+neural stage trains for the number of optimizer steps at which the fit kept its weights; the last
+weights of a neural forecaster can then be unstable in long rollouts (see refit_config).
 """
 import argparse
 import copy
 import json
+import multiprocessing
 import pickle
+from concurrent.futures import ProcessPoolExecutor
+from itertools import repeat
 from pathlib import Path
 import numpy as np
 import torch
@@ -42,7 +50,7 @@ FORECASTERS = {"arx": ARX, "constant": Constant, "gru": GRU, "lstm": LSTM, "cnn"
 
 CONFIG_KEYS = {"metadata", "output", "run_name", "seed", "device", "cpu_threads", "validation_fraction", "blocks",
                "batch_size", "joint_batch_size", "workers", "dataloader", "in_memory", "preprocessing_batch_size", "K_eval", "trials",
-               "compressor", "dataset", "forecaster", "logging", "evaluation", "stage"}
+               "compressor", "dataset", "forecaster", "logging", "evaluation", "stage", "parallel"}
 
 
 def check_config(config):
@@ -71,8 +79,11 @@ def dump(path, value):
     temporary.replace(path)
 
 
-def fit(config, resume=False):
-    """Fit scaler, compressor and forecaster (then joint training when joint_epochs > 0)."""
+def fit(config, resume=False, preprocessing=None):
+    """Fit scaler, compressor and forecaster (then joint training when joint_epochs > 0).
+
+    preprocessing: an already fitted (scaler, compressor) to reuse instead of fitting them.
+    """
     check_config(config)
     cfg = copy.deepcopy(config)
     cfg.setdefault("seed", 42)
@@ -99,17 +110,21 @@ def fit(config, resume=False):
     write_json(metadata_path, metadata)
     pipeline = Pipeline(cfg, metadata)
     logger = ExperimentLogger(directory, cfg, resume)
+    shared = preprocessing
     try:
         preprocessing = directory / "preprocessing.pkl"
         if resume and preprocessing.exists():
             with preprocessing.open("rb") as file:
                 pipeline.scaler, compressor = pickle.load(file)
+        elif shared is not None:
+            pipeline.scaler, compressor = copy.deepcopy(shared)
+            dump(preprocessing, (pipeline.scaler, to_device(compressor, "cpu")))
         else:
             pipeline.fit_scaler()
             name, values = section(cfg, "compressor")
             compressor, error = pipeline.train_compressor(COMPRESSORS[name], values, logger)
             if error is not None:  # None in a refit.
-                logger.log({"validation/reconstruction_mse": error}, 0)
+                logger.log({"Validation/reconstruction_mse": error})
             dump(preprocessing, (pipeline.scaler, to_device(compressor, "cpu")))
         to_device(compressor, pipeline.device)
         name, values = section(cfg, "forecaster")
@@ -118,16 +133,20 @@ def fit(config, resume=False):
                                                       logger, directory, resume)
         if isinstance(forecaster, DLModel) and isinstance(compressor, AE) and forecaster.joint_epochs:
             score = pipeline.fine_tune(forecaster, compressor, ForecasterDataset, dataset, logger)
-        if score is not None:  # None in a refit, which has no validation data.
-            if not np.isfinite(score):
-                raise FloatingPointError("Validation forecast diverged")
-            logger.log({"validation/field_mse": score}, 0)
-        # Everything test() needs; the compressor is saved here because joint training changes it.
-        dump(directory / "model.pkl", (pipeline.scaler, to_device(compressor, "cpu"), to_device(forecaster, "cpu")))
         # best_epochs: epochs up to the kept weights of each neural stage; refit() scales them.
         best_epochs = {"compressor": getattr(compressor, "best_epochs", None),
                        "forecaster": getattr(forecaster, "best_epochs", None),
                        "joint": getattr(forecaster, "best_joint_epochs", None)}
+        logger.log({f"Validation/best_epoch_{stage}": epochs for stage, epochs in best_epochs.items() if epochs})
+        if score is not None:  # None in a refit, which has no validation data.
+            if not np.isfinite(score):
+                raise FloatingPointError("Validation forecast diverged")
+            logger.log({"Validation/field_mse": score})
+            steps = pipeline.validation_steps
+            logger.lines("Validation/error_vs_step", range(1, len(steps) + 1), {"field_mse": steps},
+                         "Validation field MSE against rollout step", "rollout step")
+        # Everything test() needs; the compressor is saved here because joint training changes it.
+        dump(directory / "model.pkl", (pipeline.scaler, to_device(compressor, "cpu"), to_device(forecaster, "cpu")))
         write_json(directory / "summary.json", {"validation_field_mse": score, "train_frames": len(pipeline.frames("train")),
                                                 "best_epochs": {k: v for k, v in best_epochs.items() if v}})
         return score
@@ -155,22 +174,34 @@ def test(config):
     logger = ExperimentLogger(directory, config, resume=True)
     try:
         results = forecaster.test(dataset, compressor, scaler, directory, **config.get("evaluation", {}))
-        for i, (name, result) in enumerate(results.items()):
-            scalars = {f"test/{name}/mean_nrmse": result["mean_nrmse"],
-                       f"test/{name}/heat_release_relative_l2": result.get("heat_release_relative_l2"),
-                       f"test/{name}/seconds_per_step": result["seconds_per_step"]}
-            for field, value in result["field_nrmse"].items():
-                scalars[f"test/{name}/nrmse/{field}"] = value
-            for metric in ("reference_gain", "predicted_gain", "relative_gain_error", "phase_error_deg"):
-                if metric in result.get("gain_phase", {}):
-                    scalars[f"test/{name}/{metric}"] = result["gain_phase"][metric]
-            logger.log(scalars, i)
-        fitted = directory / "summary.json"
-        validation = json.loads(fitted.read_text()).get("validation_field_mse") if fitted.exists() else None
-        logger.summary(summarize(results, dataset.metadata["cases"], validation))
+        log_test(logger, results, dataset.metadata, directory)
         return results
     finally:
         logger.close()
+
+
+def log_test(logger, results, metadata, directory):
+    """Test/<case>/... scalars, the Test/per_field_nrmse table, the Test/<case>/heat_release plot
+    (predicted and reference integrated Q, when evaluated) and the Test_Summary/... numbers."""
+    scalars = {}
+    for name, result in results.items():
+        gain_phase = result.get("gain_phase", {})
+        scalars.update({f"Test/{name}/nrmse": result["mean_nrmse"], f"Test/{name}/ssim": result.get("mean_ssim"),
+                        f"Test/{name}/heat_release_l2": result.get("heat_release_relative_l2"),
+                        f"Test/{name}/gain_error": gain_phase.get("relative_gain_error"),
+                        f"Test/{name}/phase_error_deg": gain_phase.get("phase_error_deg"),
+                        f"Test/{name}/seconds_per_step": result["seconds_per_step"]})
+    logger.log(scalars)
+    fields = metadata["fields"]
+    logger.table("Test/per_field_nrmse", ["case", *fields],
+                 [[name, *(result["field_nrmse"][field] for field in fields)] for name, result in results.items()])
+    for name in results:
+        path = Path(directory) / f"{name}_Q.npz"
+        if path.exists():
+            with np.load(path) as q:
+                logger.lines(f"Test/{name}/heat_release", q["time"], {"reference": q["reference"], "predicted": q["predicted"]},
+                             f"{name}: integrated heat release", "time [s]")
+    logger.summary(summarize(results, metadata["cases"]))
 
 
 def refit_config(config):
@@ -204,28 +235,66 @@ def refit(config, seeds):
 
 
 def hpo(config, seeds=None):
-    """Tune, fit and test the best config, then refit it per seed and test; return (best config, test results).
+    """Tune with config["seed"], then fit and test the best config once per seed.
 
-    The search and the fit use config["seed"]; seeds (default: that seed) are the refit seeds.
+    Return (best config, {seed: test results}); seeds default to [config["seed"]].
     """
     check_config(config)
     seed_everything(config.get("seed", 42))
     torch.set_num_threads(config.get("cpu_threads", 4))
-    best = copy.deepcopy(config)
-    best.update(optimize(config, COMPRESSORS[section(config, "compressor")[0]],
-                         FORECASTERS[section(config, "forecaster")[0]]))
+    config = {**config, "run_name": config.get("run_name") or new_run_name(config)}
+    # The search is its own W&B run, "<run_name>/hpo", in the model's group (HPO/ keys).
+    searched = {**config, "stage": "hpo"}
+    logger = ExperimentLogger(Path(config["output"]) / config["run_name"] / "hpo", searched,
+                              name=f"{config['run_name']}/hpo")
+    try:
+        best = copy.deepcopy(config)
+        best.update(optimize(searched, COMPRESSORS[section(config, "compressor")[0]],
+                             FORECASTERS[section(config, "forecaster")[0]], logger=logger))
+        logger.table("HPO/best_config", ["section", "values"],
+                     [[key, json.dumps(best[key])] for key in ("compressor", "dataset", "forecaster")])
+    finally:
+        logger.close()
     best["stage"] = "fit"
-    fit(best)
-    results = test(best)
-    refit(best, seeds or [best.get("seed", 42)])
+    compressor_class = COMPRESSORS[section(best, "compressor")[0]]
+    seeds = list(seeds or [config.get("seed", 42)])
+    if compressor_class.deterministic and FORECASTERS[section(best, "forecaster")[0]].deterministic:
+        seeds = seeds[:1]  # Every seed would fit the same model.
+    results, shared = {}, None
+    if compressor_class.deterministic:  # Fitted with the first seed, reused by the others.
+        results[seeds[0]] = fit_and_test(best, seeds[0])
+        shared = str(run_directory({**best, "seed": seeds[0]}) / "preprocessing.pkl")
+        seeds = seeds[1:]
+    parallel = min(best.get("parallel", 1), len(seeds))
+    if parallel > 1:  # Seeds are independent: config["parallel"] processes at a time.
+        with ProcessPoolExecutor(parallel, mp_context=multiprocessing.get_context("spawn")) as pool:
+            results.update(zip(seeds, pool.map(fit_and_test, repeat(best), seeds, repeat(shared))))
+    else:
+        results.update((seed, fit_and_test(best, seed, shared)) for seed in seeds)
     return best, results
+
+
+def fit_and_test(config, seed, preprocessing=None):
+    """Fit and test one seed of a config; preprocessing is the path of a (scaler, compressor) to reuse.
+
+    A top-level function, so that hpo can run seeds in worker processes.
+    """
+    Dataset.in_memory = config.get("in_memory", False)
+    config = {**config, "seed": seed}
+    shared = None
+    if preprocessing:
+        with open(preprocessing, "rb") as file:
+            shared = pickle.load(file)
+    fit(config, preprocessing=shared)
+    return test(config)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["fit", "test", "run", "hpo", "refit"],
-                        help="hpo: tune once (config seed), then refit with each of --seeds; "
-                             "refit: refit a fitted config (its config.json) with each of --seeds")
+                        help="hpo: tune once (config seed), then fit and test with each of --seeds; "
+                             "refit (ablation): refit a fitted config (its config.json) on all "
+                             "training data with each of --seeds")
     parser.add_argument("--config", required=True)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--metadata", help="Dataset metadata.json, replacing the config value")

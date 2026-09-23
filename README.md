@@ -273,32 +273,47 @@ python -m Experiments.run test --config Experiments/Configs/pod_gru.json \
 python -m Experiments.run fit --config Experiments/Configs/pod_gru.json \
   --run-name pod_gru_20260920T120000Z --seed 1 --resume
 
-# Tune (config seed), fit and test the best config, then refit it on all training data
-# with seeds 0 1 2 and test each refit.
-python -m Experiments.run hpo --config Experiments/Configs/hpo_pod_arx.json --seeds 0 1 2
-# Refit alone, from a fitted config.
-python -m Experiments.run refit --config Experiments/Results/<run_name>/seed_42/config.json --seeds 0 1 2
+# Tune once (config seed), then fit the best config on the tuning split and test it, per seed.
+python -m Experiments.run hpo --config Experiments/Configs/hpo_pod_arx.json --seeds 0 1 2 3 4 5 6 7 8 9
+# Ablation: refit a fitted config on all training data (no validation, no early stopping).
+python -m Experiments.run refit --config Experiments/Results/<run_name>/seed_0/config.json --seeds 0 1 2
 tensorboard --logdir Experiments/Results
 ```
 
-`hpo` writes two experiments: `<run_name>` (the best config fitted on the
-training/validation split, W&B config `stage: fit`) and `<run_name>_refit` (fitted on
-every training frame, `stage: refit`, one folder per seed). A refit has no validation
-data, so nothing stops training early: each neural stage trains for the same number of
-optimizer steps as the fit kept, i.e. the fit's best epoch count times
-train frames / all training frames. Every test also writes `summary/*` values to the W&B
-run summary (mean and worst test NRMSE, SSIM, heat-release error, gain and phase error
-per forcing frequency, validation MSE): a bar chart of `summary/test_nrmse` ranks all
-runs.
+Every model follows the same protocol: `hpo` tunes once, then fits the best config on
+the training/validation split with early stopping, once per seed (`<run_name>/seed_N`,
+W&B config `stage: fit`), and tests each. Deterministic parts are not fitted again: POD is
+fitted with the first seed and reused, and POD + ARX (a fully deterministic model) runs one
+seed only. When the config gives no rank, stage 1 tunes an autoencoder separately at each rank
+of its `rank_range` (8, 16, 32, 64) and stage 2 picks the rank on the forecast objective; POD
+is fitted once at rank 128 and truncated. Stage 1 does not depend on the forecaster, so it is
+cached in `<output>/hpo_cache/` and shared by every pair with the same compressor settings;
+pairs running at the same time split its ranks between them. Delete `hpo_cache/` after
+changing the prepared data. `refit` is an ablation (`<run_name>_refit`,
+`stage: refit`): it trains on every training frame for the number of optimizer steps the
+fit kept (the fit's best epoch count times train frames / all training frames). Without
+validation it keeps the last weights, which for neural forecasters can diverge in long
+rollouts. Every test also writes `summary/*` values (mean and worst test NRMSE, SSIM,
+heat-release error, gain and phase error per forcing frequency, validation MSE).
 
 Full benchmark on a GPU server (run inside `screen`): every compressor-forecaster pair
-(`hpo_<compressor>_<forecaster>.json`, the same 30-trial budget each) plus the constant
-baseline (`identity_constant.json`), spread over the GPUs, one log per pair in `logs/`:
+(`hpo_<compressor>_<forecaster>.json`, the same budget each: 20 trials per stage, neural
+forecasters at most 60 epochs with patience 10, batch size 256) plus the constant baseline
+(`identity_constant.json`), seeds 0-9 (`SEEDS` to change), one log per pair in `logs/`:
 
 ```bash
-PYTHON=.venv/bin/python Experiments/scripts/hpo.sh              # everything
+PYTHON=.venv/bin/python Experiments/scripts/hpo.sh              # everything, all at once
 GPUS="0 1" Experiments/scripts/hpo.sh pod_arx pod_gru constant  # a subset on GPUs 0 and 1
+JOBS_PER_GPU=2 Experiments/scripts/hpo.sh                       # at most 2 pairs per GPU
 ```
+
+The small models leave a GPU mostly idle (their time goes into launching many tiny GPU
+operations), so throughput comes from running many processes per GPU: every pair starts at
+once, interleaved over the GPUs, and each pair runs `parallel` (config, 3) HPO trials or seed
+fits at a time in worker processes. The configs set `cpu_threads: 1` and `in_memory: false`,
+so the processes share the operating system's file cache instead of each holding the data.
+A trial that runs out of GPU memory counts as failed. Test metrics are computed in batches of
+frames, SSIM on the GPU.
 
 You can also pass a saved `seed_N/config.json` to `--config`; it already contains
 the exact run name and seed. `--seed` overrides a single seed; `--seeds` runs multiple

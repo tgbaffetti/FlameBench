@@ -6,8 +6,7 @@ then unfreezes a torch compressor and trains encoder, forecaster and decoder tog
 error + rollout_weight * mean error over the K recursive (fed-back) predictions of each window,
 as in TransformerROM's TransformerLoss; K is the horizon of the dataset windows. The error
 function is MSE, MAE, Huber or SmoothL1. The optimizer (adam, adamw or sgd) and its
-weight_decay are the same in both phases. Validation windows may have a longer horizon (K_eval);
-validation also logs the error of each step.
+weight_decay are the same in both phases. Validation windows may have a longer horizon (K_eval).
 """
 import random
 from pathlib import Path
@@ -92,15 +91,13 @@ class DLModel(Model):
                 self.best_epochs = epoch + 1
                 epochs.set_postfix(train=total / count)
                 if logger:
-                    logger.log({"train/latent_loss": total/count}, epoch)
+                    logger.log({"Train/forecaster_loss": total/count}, epoch + 1, axis="Train/forecaster_epoch")
             else:
                 val_total = val_count = 0
-                val_steps = 0
                 with torch.no_grad():
                     for batch in validation:
-                        loss, steps = self.rollout_loss(*self.tensors(batch))
+                        loss, _ = self.rollout_loss(*self.tensors(batch))
                         val_total += loss.item() * len(batch["target"])
-                        val_steps += steps.cpu() * len(batch["target"])
                         val_count += len(batch["target"])
                 value = val_total / val_count
                 if not np.isfinite(value):
@@ -113,8 +110,8 @@ class DLModel(Model):
                     stale += 1
                 epochs.set_postfix(train=total / count, validation=value)
                 if logger:
-                    logger.log({"train/latent_loss": total/count, "validation/latent_loss": value,
-                                **self.step_errors("validation/latent", val_steps / val_count)}, epoch)
+                    logger.log({"Train/forecaster_loss": total/count, "Validation/forecaster_loss": value}, epoch + 1,
+                               axis="Train/forecaster_epoch")
             if checkpoint:
                 state = {"network": self.network.state_dict(), "optimizer": optimizer.state_dict(),
                          "epoch": epoch, "best": best, "stale": stale, "best_state": best_state,
@@ -169,15 +166,13 @@ class DLModel(Model):
                 self.best_joint_epochs = epoch + 1  # The last weights are kept.
                 epochs.set_postfix(train=total / count)
                 if logger:
-                    logger.log({"joint/train_field_loss": total/count}, epoch)
+                    logger.log({"Train/joint_loss": total/count}, epoch + 1, axis="Train/joint_epoch")
                 continue
             val_total = val_count = 0
-            val_steps = 0
             with torch.no_grad():
                 for batch in validation:
-                    loss, steps = self.joint_loss(compressor, batch, mask)
+                    loss, _ = self.joint_loss(compressor, batch, mask)
                     val_total += loss.item() * len(batch["target"])
-                    val_steps += steps.cpu() * len(batch["target"])
                     val_count += len(batch["target"])
             value = val_total / val_count
             if not np.isfinite(value):
@@ -191,8 +186,8 @@ class DLModel(Model):
                 stale += 1
             epochs.set_postfix(train=total / count, validation=value)
             if logger:
-                logger.log({"joint/train_field_loss": total/count, "joint/validation_field_loss": value,
-                            **self.step_errors("joint/validation_field", val_steps / val_count)}, epoch)
+                logger.log({"Train/joint_loss": total/count, "Validation/joint_loss": value}, epoch + 1,
+                           axis="Train/joint_epoch")
             if stale >= self.patience:
                 break
         if best_state is not None:
@@ -228,10 +223,6 @@ class DLModel(Model):
 
     def make_optimizer(self, parameters, lr):
         return self.OPTIMIZERS[self.optimizer](parameters, lr=lr, weight_decay=self.weight_decay)
-
-    @staticmethod
-    def step_errors(prefix, steps):
-        return {f"{prefix}_step_{k + 1}": float(value) for k, value in enumerate(steps)}
 
     def tensors(self, batch):
         return [batch[key].to(self.device, non_blocking=True) for key in ("states", "forcing", "target")]

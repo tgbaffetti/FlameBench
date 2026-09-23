@@ -1,6 +1,6 @@
 """Physical-unit metrics; evaluation statistics never feed training."""
 import numpy as np
-from scipy.ndimage import gaussian_filter
+import torch
 
 
 class FieldMetrics:
@@ -12,18 +12,23 @@ class FieldMetrics:
         self.sse = np.zeros(len(fields), dtype=np.float64)
 
     def update(self, predicted, reference):
+        """One frame: (field, cell) arrays."""
+        self.update_batch(np.asarray(predicted)[None], np.asarray(reference)[None])
+
+    def update_batch(self, predicted, reference):
+        """Frames: (frame, field, cell) arrays; the same statistics as one update per frame."""
         predicted, reference = np.asarray(predicted, dtype=np.float64), np.asarray(reference, dtype=np.float64)
-        if predicted.shape != reference.shape or reference.ndim != 2:
-            raise ValueError("Expected matching (field, cell) arrays")
+        if predicted.shape != reference.shape or reference.ndim != 3:
+            raise ValueError("Expected matching (frame, field, cell) arrays")
         if not np.isfinite(predicted).all() or not np.isfinite(reference).all():
             raise FloatingPointError("Nonfinite rollout/reference: metric undefined")
-        n = reference.shape[1]
-        mu = reference.mean(axis=1)
+        n = reference.shape[0] * reference.shape[2]
+        mu = reference.mean(axis=(0, 2))
         delta = mu - self.mean
-        self.m2 += np.square(reference-mu[:, None]).sum(axis=1) + delta**2*self.count*n/(self.count+n)
+        self.m2 += np.square(reference - mu[None, :, None]).sum(axis=(0, 2)) + delta**2*self.count*n/(self.count+n)
         self.mean += delta*n/(self.count+n)
         self.count += n
-        self.sse += np.square(predicted-reference).sum(axis=1)
+        self.sse += np.square(predicted-reference).sum(axis=(0, 2))
 
     def result(self):
         std = np.sqrt(self.m2/self.count)
@@ -41,28 +46,58 @@ class FieldSSIM:
 
     SSIM of Wang et al. (2004): Gaussian window with sigma 1.5, K1 = 0.01, K2 = 0.03. data_range
     is the range of each reference field over the whole case. Invalid pixels are set to zero in
-    both images and the SSIM map is averaged over valid pixels only.
+    both images and the SSIM map is averaged over valid pixels only. The blur is that of
+    scipy.ndimage.gaussian_filter(sigma=1.5, truncate=3.5), whose default border mode repeats
+    the edge pixels mirrored, computed in float64 torch on `device` for a batch of frames at once.
     """
-    def __init__(self, fields, mask, data_range):
+    SIGMA, TRUNCATE = 1.5, 3.5
+
+    def __init__(self, fields, mask, data_range, device="cpu"):
         self.fields, self.mask = list(fields), np.asarray(mask, dtype=bool)
-        data_range = np.asarray(data_range, dtype=np.float64)[:, None, None]
+        self.device = torch.device(device)
+        data_range = torch.as_tensor(np.asarray(data_range, dtype=np.float64), device=self.device)[:, None, None]
         self.c1, self.c2 = (0.01 * data_range) ** 2, (0.03 * data_range) ** 2
+        self.valid = torch.as_tensor(self.mask, device=self.device)
+        radius = int(self.TRUNCATE * self.SIGMA + 0.5)
+        x = torch.arange(-radius, radius + 1, dtype=torch.float64, device=self.device)
+        kernel = torch.exp(-0.5 * (x / self.SIGMA) ** 2)
+        self.kernel, self.radius = kernel / kernel.sum(), radius
         self.total = np.zeros(len(fields), dtype=np.float64)
         self.count = 0
 
+    def blur(self, images):
+        """Separable Gaussian blur of (batch, height, width), mirrored ("reflect") borders."""
+        r = self.radius
+        for dim in (1, 2):
+            # scipy "reflect": the image repeats mirrored, period 2 * size, also for sizes below r.
+            size = images.shape[dim]
+            index = torch.arange(-r, size + r, device=self.device) % (2 * size)
+            index = torch.where(index < size, index, 2 * size - 1 - index)
+            images = images.index_select(dim, index).movedim(dim, -1)
+            shape = images.shape
+            images = torch.nn.functional.conv1d(images.reshape(-1, 1, shape[-1]), self.kernel.view(1, 1, -1))
+            images = images.reshape(*shape[:-1], -1).movedim(-1, dim)
+        return images
+
     def update(self, predicted, reference):
-        """predicted, reference: (field, height, width) images."""
-        def blur(image):
-            return gaussian_filter(image, 1.5, truncate=3.5, axes=(1, 2))
-        p = np.where(self.mask, predicted, 0).astype(np.float64)
-        r = np.where(self.mask, reference, 0).astype(np.float64)
-        mean_p, mean_r = blur(p), blur(r)
-        var_p, var_r = blur(p * p) - mean_p ** 2, blur(r * r) - mean_r ** 2
-        covariance = blur(p * r) - mean_p * mean_r
-        ssim = ((2 * mean_p * mean_r + self.c1) * (2 * covariance + self.c2)
-                / ((mean_p ** 2 + mean_r ** 2 + self.c1) * (var_p + var_r + self.c2)))
-        self.total += ssim[:, self.mask].mean(axis=1)
-        self.count += 1
+        """One frame: (field, height, width) images."""
+        self.update_batch(np.asarray(predicted)[None], np.asarray(reference)[None])
+
+    def update_batch(self, predicted, reference):
+        """Frames: (frame, field, height, width) images."""
+        frames, fields = predicted.shape[:2]
+        p = torch.as_tensor(np.asarray(predicted), device=self.device).double() * self.valid
+        r = torch.as_tensor(np.asarray(reference), device=self.device).double() * self.valid
+        p, r = p.flatten(0, 1), r.flatten(0, 1)  # (frame * field, height, width)
+        mean_p, mean_r = self.blur(p), self.blur(r)
+        var_p, var_r = self.blur(p * p) - mean_p ** 2, self.blur(r * r) - mean_r ** 2
+        covariance = self.blur(p * r) - mean_p * mean_r
+        c1, c2 = self.c1.repeat(frames, 1, 1), self.c2.repeat(frames, 1, 1)
+        ssim = ((2 * mean_p * mean_r + c1) * (2 * covariance + c2)
+                / ((mean_p ** 2 + mean_r ** 2 + c1) * (var_p + var_r + c2)))
+        per_frame = ssim[:, self.valid].mean(dim=1).view(frames, fields)
+        self.total += per_frame.sum(dim=0).cpu().numpy()
+        self.count += frames
 
     def result(self):
         ssim = self.total / self.count
