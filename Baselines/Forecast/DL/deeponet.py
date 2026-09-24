@@ -47,6 +47,7 @@ class DeepONetNetwork(nn.Module):
 class DeepONet(DLModel):
     """grid: path to the ImageGrid .npz; fields: field count (latent rank = fields x cells)."""
     name = "deeponet"
+    needs_grid = True  # grid and fields default from the dataset metadata (see train_forecaster).
     hyperparameters_ranges = {**{k: v for k, v in DLModel.hyperparameters_ranges.items() if k != "dropout"},
                               "sensors": {"type": "categorical", "choices": [512, 1024, 2048]},
                               "p": {"type": "categorical", "choices": [32, 64, 128]},

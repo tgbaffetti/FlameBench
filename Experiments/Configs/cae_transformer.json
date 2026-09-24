@@ -7,29 +7,41 @@
   "validation_fraction": 0.3,
   "blocks": 20,
   "K_eval": 150,
-  "batch_size": 4,
-  "joint_batch_size": 4,
+  "batch_size": 64,
+  "joint_batch_size": 8,
   "workers": 0,
-  "in_memory": false,
+  "in_memory": true,
   "preprocessing_batch_size": 256,
   "compressor": {
-    "name": "identity"
+    "name": "cae",
+    "rank": 16,
+    "epochs": 20,
+    "batch_size": 16,
+    "lr": 0.001,
+    "channels": [
+      16,
+      32,
+      64
+    ],
+    "kernel_size": 3,
+    "stride": 2,
+    "padding": 0
   },
   "dataset": {
-    "Nx": 4,
-    "Ni": 4,
+    "Nx": 9,
+    "Ni": 0,
     "horizon": 10
   },
   "forecaster": {
-    "name": "transolver",
-    "dim": 128,
-    "depth": 4,
-    "heads": 4,
-    "slices": 32,
+    "name": "transformer",
+    "input_normalization": "batch",
+    "hidden": 64,
+    "layers": 2,
     "lr": 0.001,
-    "epochs": 50,
-    "patience": 10,
-    "rollout_weight": 0.5
+    "epochs": 80,
+    "patience": 20,
+    "rollout_weight": 0.5,
+    "joint_epochs": 20
   },
   "logging": {
     "wandb": {

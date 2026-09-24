@@ -27,7 +27,7 @@ class Pipeline:
         self.scaler = None
         self.refit = self.split["validation_fraction"] == 0
         self.validation_steps = None  # Field MSE at each rollout step of the last validation_error.
-        self._frozen = {}  # (compressor id, Nx, Ni) -> (compressor, frozen-state reference error)
+        self._frozen = {}  # (compressor class, rank, Nx, Ni) -> frozen-state reference error
 
     def loader(self, dataset, shuffle=False, batch_size=None):
         return make_loader(dataset, batch_size=batch_size or self.config.get("batch_size", 64), shuffle=shuffle,
@@ -70,6 +70,13 @@ class Pipeline:
         training = self.windows(dataset_class, dataset_hyperparameters, "train", encoder)
         validation = None if self.refit else self.loader(
             self.windows(dataset_class, dataset_hyperparameters, "validation", encoder, validation=True))
+        if getattr(forecaster_class, "needs_grid", False):
+            # Operators read the sensor grid (an absolute path after load_metadata) and the field
+            # count from the metadata: config copies were working-directory-relative and stale.
+            defaults = {"fields": len(self.metadata["fields"])}
+            if self.metadata.get("grid_indices"):
+                defaults["grid"] = self.metadata["grid_indices"]
+            hyperparameters = {**defaults, **hyperparameters}
         # A row holds a latent state and the forcing; the forecaster returns the next latent state.
         forecaster = forecaster_class.build(hyperparameters, input_size=compressor.rank + 1, output_size=compressor.rank,
                                             Nx=training.Nx, Ni=training.Ni, device=self.device)
@@ -90,17 +97,20 @@ class Pipeline:
     def frozen_reference(self, compressor, dataset_class, dataset_hyperparameters):
         """Validation error of repeating the last state forever: the scale of the divergence gate.
 
-        Cached per compressor and window shape; the entry pins the compressor so its id stays
-        valid. After joint fine-tuning the reference is slightly stale (same object, new
-        decoder) — irrelevant at the default gate factor of 100.
+        Cached per compressor type, rank and window shape, keeping only the error: HPO builds a
+        fresh compressor object every trial (POD.truncated, the fine-tune deepcopy), so an
+        object-identity key would miss every trial and pin each compressor — CUDA autoencoders
+        included — alive for the whole search. Same-shape compressors with different weights
+        share a slightly different reference — irrelevant at the default gate factor of 100,
+        like the post-fine-tuning staleness.
         """
         dataset = self.windows(dataset_class, dataset_hyperparameters, "validation", validation=True)
-        key = (id(compressor), dataset.Nx, dataset.Ni)
+        key = (type(compressor).__name__, getattr(compressor, "rank", None), dataset.Nx, dataset.Ni)
         if key not in self._frozen:
             frozen = Constant(Nx=dataset.Nx, Ni=dataset.Ni)
-            self._frozen[key] = (compressor, validation_error(frozen, compressor, dataset,
-                                                              self.joint_batch_size, self.loader_options))
-        return self._frozen[key][1]
+            self._frozen[key] = validation_error(frozen, compressor, dataset,
+                                                 self.joint_batch_size, self.loader_options)
+        return self._frozen[key]
 
     def validation_error(self, forecaster, compressor, dataset_class, dataset_hyperparameters):
         """Field MSE of K_eval-step recursive forecasts: the selection objective (None in a refit).

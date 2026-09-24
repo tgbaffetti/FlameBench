@@ -30,11 +30,12 @@
     "save_predictions": false
   },
   "compressor": {
-    "name": "pod"
+    "name": "cae",
+    "epochs": 20
   },
   "dataset": {},
   "forecaster": {
-    "name": "arx"
+    "name": "narx"
   },
   "parallel": 3
 }

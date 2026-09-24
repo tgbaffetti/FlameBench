@@ -34,7 +34,7 @@
   },
   "dataset": {},
   "forecaster": {
-    "name": "arx"
+    "name": "narx"
   },
   "parallel": 3
 }

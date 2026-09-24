@@ -3,24 +3,43 @@
   "output": "Experiments/Results",
   "seed": 42,
   "device": "cuda",
-  "cpu_threads": 1,
+  "cpu_threads": 4,
   "validation_fraction": 0.3,
   "blocks": 20,
   "K_eval": 150,
-  "trials": 25,
-  "batch_size": 256,
-  "joint_batch_size": 8,
+  "batch_size": 64,
   "workers": 0,
-  "in_memory": false,
+  "in_memory": true,
   "preprocessing_batch_size": 256,
+  "compressor": {
+    "name": "cae",
+    "rank": 16,
+    "epochs": 20,
+    "batch_size": 16,
+    "lr": 0.001,
+    "channels": [
+      16,
+      32,
+      64
+    ],
+    "kernel_size": 3,
+    "stride": 2,
+    "padding": 0
+  },
+  "dataset": {
+    "Nx": 9,
+    "Ni": 0,
+    "horizon": 1
+  },
+  "forecaster": {
+    "name": "arx",
+    "alpha": 0.0001
+  },
   "logging": {
     "wandb": {
       "mode": "offline",
       "project": "rom-flamebench",
-      "entity": "FireMark",
-      "tags": [
-        "benchmark-v2"
-      ]
+      "entity": "FireMark"
     }
   },
   "evaluation": {
@@ -28,13 +47,5 @@
     "initialization": "steady",
     "gain_phase_start": 0.5,
     "save_predictions": false
-  },
-  "compressor": {
-    "name": "pod"
-  },
-  "dataset": {},
-  "forecaster": {
-    "name": "arx"
-  },
-  "parallel": 3
+  }
 }

@@ -69,8 +69,10 @@ class NARX(ARX):
     trading forcing response for rollout stability.
     """
     name = "narx"
-    hyperparameters_ranges = {"alpha": {"type": "float", "low": 1e-8, "high": 1.0, "log": True},
-                              "cross_alpha": {"type": "float", "low": 1e-8, "high": 1e3, "log": True}}
+    # The 2026-09-23 smoke runs needed alpha=30, cross_alpha=3e4 to stay finite over 2000-step
+    # rollouts (amplitude fragility of the bilinear term), so the search must reach well past that.
+    hyperparameters_ranges = {"alpha": {"type": "float", "low": 1e-8, "high": 1e3, "log": True},
+                              "cross_alpha": {"type": "float", "low": 1e-8, "high": 1e6, "log": True}}
     dataset_ranges = {"horizon": 1}  # The closed-form fit is one-step.
 
     def __init__(self, input_size=None, output_size=None, Nx=9, Ni=0, device="cpu", alpha=1e-4, cross_alpha=None):

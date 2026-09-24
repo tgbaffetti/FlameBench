@@ -70,6 +70,7 @@ class TransolverNetwork(nn.Module):
 class Transolver(DLModel):
     """grid: path to the ImageGrid .npz; fields: field count (latent rank = fields x cells)."""
     name = "transolver"
+    needs_grid = True  # grid and fields default from the dataset metadata (see train_forecaster).
     hyperparameters_ranges = {**{k: v for k, v in DLModel.hyperparameters_ranges.items() if k != "dropout"},
                               "dim": {"type": "categorical", "choices": [64, 128, 256]},
                               "slices": {"type": "categorical", "choices": [16, 32, 64]}}

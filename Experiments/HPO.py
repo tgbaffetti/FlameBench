@@ -226,7 +226,9 @@ def log_study(logger, study, name):
         return  # Too few trials for Optuna to tell parameters apart.
     try:
         importance = optuna.importance.get_param_importances(study)
-    except (RuntimeError, ValueError):  # e.g. every trial had the same parameters
+    except (RuntimeError, ValueError, TypeError):
+        # RuntimeError/ValueError: e.g. every trial had the same parameters. TypeError: Optuna's
+        # PedAnova evaluator cannot hash list-valued categorical choices (hiddens, channels).
         return
     if importance:
         logger.table(f"HPO/{name}/param_importance", ["parameter", "importance"],

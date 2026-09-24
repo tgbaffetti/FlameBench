@@ -755,7 +755,11 @@ def test_divergence_gate_bounds_validation_score(metadata,tmp_path):
             return np.asarray(states[:,-1])*3  # Finite for K_eval steps, astronomically bad.
     assert pipeline.validation_error(Amplifier(),compressor,ForecasterDataset,dataset)==float('inf')
     assert pipeline.validation_steps is None  # No per-step curve is reported for a gated score.
-    # The reference is computed once per compressor and window shape.
+    # The reference is computed once per compressor type, rank and window shape, not per object:
+    # HPO builds a fresh compressor every trial, and pinning each one leaked GPU memory.
+    assert len(pipeline._frozen)==1
+    compressor2,_=pipeline.train_compressor(Identity,{})
+    pipeline.validation_error(Constant(Nx=1,Ni=0),compressor2,ForecasterDataset,dataset)
     assert len(pipeline._frozen)==1
 
 
@@ -784,6 +788,9 @@ def test_evaluate_divergence_status_and_restart_protocol(metadata,tmp_path):
     diverged=evaluate(Amplifier(),test_data,pod,scaler,tmp_path/'diverged')['sine']
     assert diverged['status']=='diverged' and 0<diverged['diverged_at_step']<80
     assert 'seconds_per_step' not in diverged  # Partial cases report no completed-only keys.
+    # The finite frames buffered before the break are scored, not discarded.
+    assert sum(b['frames'] for b in diverged['horizon_nrmse'].values())==diverged['diverged_at_step']
+    assert diverged['mean_nrmse']>0
     class Frozen:
         def predict(self,states,forcing):
             return np.asarray(states[:,-1]).copy()
@@ -801,6 +808,26 @@ def test_evaluate_divergence_status_and_restart_protocol(metadata,tmp_path):
     summary=summarize({'sine':diverged,'other':free},metadata['cases'])
     assert summary['Test_Summary/diverged_cases']==1
     assert summary['Test_Summary/nrmse']==pytest.approx(free['mean_nrmse'])
+    # Any divergence forfeits the worst case: partial early-step scores must never win a ranking.
+    assert summary['Test_Summary/nrmse_worst']==float('inf')
+    assert summary['Test_Summary/ssim']==pytest.approx(free['mean_ssim'])
+
+
+def test_divergence_step_is_exact(metadata,tmp_path):
+    # Per-frame finiteness checks pin diverged_at_step exactly, not to METRIC_BATCH precision.
+    scaler,pod=scaled_pod(metadata)
+    test_data=ForecasterDataset(metadata,'test',Nx=0,Ni=0)
+    class NanAfter:
+        calls=0
+        def predict(self,states,forcing):  # One warm-up call, then one call per step.
+            NanAfter.calls+=1
+            out=np.asarray(states[:,-1]).copy()
+            if NanAfter.calls>=9:
+                out[:]=np.nan
+            return out
+    result=evaluate(NanAfter(),test_data,pod,scaler,tmp_path/'exact')['sine']
+    assert result['status']=='diverged' and result['diverged_at_step']==7
+    assert sum(b['frames'] for b in result['horizon_nrmse'].values())==7
 
 
 def test_narx_features_and_penalties():

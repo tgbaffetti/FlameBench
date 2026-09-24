@@ -10,6 +10,10 @@ Data/Raw/
 Data/**/*.npy
 Data/**/*.npz
 Data/**/*.tmp
+# Machine-local symlinks into the shared dataset (/srv/mlg/shared/FlameBench).
+Data/Images
+Data/grid.vtu
+/data
 Experiments/Results/*
 !Experiments/Results/.gitkeep
 wandb/
