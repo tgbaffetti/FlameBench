@@ -5,6 +5,7 @@ and K_eval, the number of recursive steps of the validation windows. The scaler 
 the training frames and never tuned. validation_fraction 0 is the refit after the HPO: all training
 frames are used, nothing is validated, and the validation errors are None.
 """
+import inspect
 import numpy as np
 from DataProcessing.loading import make_loader
 from DataProcessing.metadata import load_metadata
@@ -71,10 +72,15 @@ class Pipeline:
         validation = None if self.refit else self.loader(
             self.windows(dataset_class, dataset_hyperparameters, "validation", encoder, validation=True))
         if getattr(forecaster_class, "needs_grid", False):
-            # Operators read the sensor grid (an absolute path after load_metadata) and the field
-            # count from the metadata: config copies were working-directory-relative and stale.
-            defaults = {"fields": len(self.metadata["fields"])}
-            if self.metadata.get("grid_indices"):
+            # Operators read the sensor grid (an absolute path after load_metadata) and, where
+            # their constructor takes it, the field count from the metadata: config copies were
+            # working-directory-relative and stale. Only accepted keywords are injected (FNO
+            # derives the field count from the grid and takes no `fields`).
+            accepted = inspect.signature(forecaster_class.__init__).parameters
+            defaults = {}
+            if "fields" in accepted:
+                defaults["fields"] = len(self.metadata["fields"])
+            if "grid" in accepted and self.metadata.get("grid_indices"):
                 defaults["grid"] = self.metadata["grid_indices"]
             hyperparameters = {**defaults, **hyperparameters}
         # A row holds a latent state and the forcing; the forecaster returns the next latent state.

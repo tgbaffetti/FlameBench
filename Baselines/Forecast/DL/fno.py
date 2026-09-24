@@ -152,6 +152,7 @@ class FNO(DLModel):
     padding of the non-periodic domain; activation: a networks.ACTIVATIONS key; coordinates:
     append the (x, z) channels. training: DLModel keywords (device, lr, optimizer, ...)."""
     name = "fno"
+    needs_grid = True  # grid defaults from the dataset metadata (see train_forecaster).
     hyperparameters_ranges = {**{k: v for k, v in DLModel.hyperparameters_ranges.items() if k != "dropout"},
                               "layers": {"type": "int", "low": 2, "high": 4},
                               "width": {"type": "categorical", "choices": [20, 32, 64]},
