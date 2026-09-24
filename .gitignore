@@ -26,3 +26,6 @@ wandb/
 
 .idea/
 .ruff_cache/
+# Generated figures; rebuild with make_figures.py
+figures/*.png
+figures/*.pdf
