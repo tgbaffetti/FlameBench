@@ -60,6 +60,22 @@ class Pipeline:
             return compressor, None
         return compressor, reconstruction_error(compressor, validation, loader_options=self.loader_options)
 
+    def operator_defaults(self, forecaster_class, hyperparameters):
+        """Metadata defaults for operators (needs_grid): the grid (an absolute path after
+        load_metadata) and, where the constructor takes it, the field count. Config copies were
+        working-directory-relative and stale; only accepted keywords are injected (FNO derives
+        the field count from the grid and takes no `fields`). Used by train_forecaster and by
+        the HPO feasibility check, which builds the forecaster directly."""
+        if not getattr(forecaster_class, "needs_grid", False):
+            return hyperparameters
+        accepted = inspect.signature(forecaster_class.__init__).parameters
+        defaults = {}
+        if "fields" in accepted:
+            defaults["fields"] = len(self.metadata["fields"])
+        if "grid" in accepted and self.metadata.get("grid_indices"):
+            defaults["grid"] = self.metadata["grid_indices"]
+        return {**defaults, **hyperparameters}
+
     def train_forecaster(self, forecaster_class, hyperparameters, dataset_class, dataset_hyperparameters, compressor,
                          logger=None, directory=None, resume=False):
         """Build and fit a forecaster on the latents of a frozen compressor; return it with its validation error.
@@ -71,18 +87,7 @@ class Pipeline:
         training = self.windows(dataset_class, dataset_hyperparameters, "train", encoder)
         validation = None if self.refit else self.loader(
             self.windows(dataset_class, dataset_hyperparameters, "validation", encoder, validation=True))
-        if getattr(forecaster_class, "needs_grid", False):
-            # Operators read the sensor grid (an absolute path after load_metadata) and, where
-            # their constructor takes it, the field count from the metadata: config copies were
-            # working-directory-relative and stale. Only accepted keywords are injected (FNO
-            # derives the field count from the grid and takes no `fields`).
-            accepted = inspect.signature(forecaster_class.__init__).parameters
-            defaults = {}
-            if "fields" in accepted:
-                defaults["fields"] = len(self.metadata["fields"])
-            if "grid" in accepted and self.metadata.get("grid_indices"):
-                defaults["grid"] = self.metadata["grid_indices"]
-            hyperparameters = {**defaults, **hyperparameters}
+        hyperparameters = self.operator_defaults(forecaster_class, hyperparameters)
         # A row holds a latent state and the forcing; the forecaster returns the next latent state.
         forecaster = forecaster_class.build(hyperparameters, input_size=compressor.rank + 1, output_size=compressor.rank,
                                             Nx=training.Nx, Ni=training.Ni, device=self.device)

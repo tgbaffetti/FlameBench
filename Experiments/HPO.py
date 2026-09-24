@@ -246,7 +246,8 @@ def check_feasible(pipeline, forecaster_class, dataset_class, dataset_values, va
     try:
         windows = pipeline.windows(dataset_class, dataset_values, "train")
         pipeline.windows(dataset_class, dataset_values, "validation", validation=True)
-        forecaster_class.build(values, input_size=rank + 1, output_size=rank, Nx=windows.Nx, Ni=windows.Ni,
+        forecaster_class.build(pipeline.operator_defaults(forecaster_class, values),
+                               input_size=rank + 1, output_size=rank, Nx=windows.Nx, Ni=windows.Ni,
                                device="cpu")
     except ValueError as error:
         raise optuna.TrialPruned(f"Infeasible values: {error}") from error
