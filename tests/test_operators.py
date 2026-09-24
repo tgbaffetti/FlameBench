@@ -86,3 +86,69 @@ def test_deeponet_end_to_end(metadata, tmp_path):
     assert result['status'] in {'completed', 'diverged'}  # Two epochs prove the path, not accuracy.
     if result['status'] == 'completed':
         assert np.isfinite(result['mean_nrmse'])
+
+
+def small_fno(grid_path, **kwargs):
+    from Baselines.Forecast.DL.fno import FNO
+    # The fixture image is 3 x 2; padding 1 gives 4 x 3, which holds modes up to (2, 2).
+    args = dict(input_size=RANK + 1, output_size=RANK, Nx=1, Ni=1, grid=grid_path, layers=2, width=4,
+                modes=[1, 1], projection=[8], padding=1, device='cpu')
+    args.update(kwargs)
+    return FNO(**args)
+
+
+def test_fno_contract_and_configuration(grid_path):
+    from Baselines.Forecast.DL.fno import FNO, FourierLayer
+    states, forcing = np.random.default_rng(0).normal(size=(3, 2, RANK)), np.zeros((3, 2))
+    for kwargs in ({}, {'coordinates': False}, {'projection': []}, {'activation': 'silu', 'layers': 3, 'width': 6}):
+        out = small_fno(grid_path, **kwargs).predict(states, forcing)
+        assert out.shape == (3, RANK) and np.isfinite(out).all()
+    # HPO samples layers and width directly: no derived key can override them.
+    model = FNO.build({'layers': 3, 'width': 5, 'modes': [2, 2]}, input_size=RANK + 1, output_size=RANK,
+                      Nx=1, Ni=1, grid=grid_path, padding=1, projection=[8])
+    fourier = [m for m in model.network.body if isinstance(m, FourierLayer)]
+    assert len(fourier) == 3 and all(m.pointwise.out_channels == 5 for m in fourier)
+    assert 'modes=(2, 2)' in repr(model.network)
+    with pytest.raises(ValueError, match='modes'):
+        small_fno(grid_path, modes=[3, 1])  # 3 > 4 // 2 rows of the padded grid.
+    with pytest.raises(ValueError, match='incompatible'):
+        small_fno(grid_path, output_size=RANK + 1)
+    with pytest.raises(ValueError, match='layers'):
+        small_fno(grid_path, layers=0)
+    with pytest.raises(TypeError):
+        small_fno(grid_path, channels=[4, 4])  # Removed: layers and width are the only knobs.
+    with pytest.raises(ValueError, match='grid'):
+        FNO(input_size=RANK + 1, output_size=RANK)
+
+
+def test_fno_learns_teacher(grid_path):
+    torch.manual_seed(0)
+    net, teacher = small_fno(grid_path).network, small_fno(grid_path).network
+    states, forcing = torch.randn(16, 2, RANK), torch.rand(16, 2)
+    with torch.no_grad():
+        target = teacher(states, forcing)  # Realizable: produced by a same-shape teacher.
+    optimizer = torch.optim.Adam(net.parameters(), lr=1e-2)
+    initial = torch.nn.functional.mse_loss(net(states, forcing), target).item()
+    for _ in range(60):
+        optimizer.zero_grad()
+        loss = torch.nn.functional.mse_loss(net(states, forcing), target)
+        loss.backward()
+        optimizer.step()
+    assert loss.item() < 0.5 * initial
+
+
+def test_fno_end_to_end(metadata, tmp_path):
+    from Experiments.run import fit, test as run_test
+    path = tmp_path / 'metadata.json'
+    path.write_text(json.dumps(metadata))
+    cfg = {'metadata': str(path), 'output': str(tmp_path / 'run'), 'run_name': 'fno', 'seed': 42,
+           **SETTINGS, 'batch_size': 8,
+           'compressor': {'name': 'identity'}, 'dataset': {'Nx': 1, 'Ni': 1, 'horizon': 2},
+           'forecaster': {'name': 'fno', 'grid': metadata['grid_indices'], 'layers': 2, 'width': 4, 'modes': [1, 1],
+                          'projection': [8], 'padding': 1, 'epochs': 2, 'patience': 2},
+           'evaluation': {'heat_release': True}}
+    assert np.isfinite(fit(cfg))
+    result = run_test(cfg)['sine']
+    assert result['status'] in {'completed', 'diverged'}  # Two epochs prove the path, not accuracy.
+    if result['status'] == 'completed':
+        assert np.isfinite(result['mean_nrmse'])

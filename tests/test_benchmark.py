@@ -834,3 +834,85 @@ def test_narx_recovers_linear_system(metadata,tmp_path):
     results=evaluate(model,ForecasterDataset(metadata,'test',Nx=0,Ni=1),pod,scaler,tmp_path/'eval')
     assert results['sine']['status']=='completed'
     assert results['sine']['mean_nrmse']<1e-4
+
+
+def test_opinf_recovers_quadratic_system():
+    # x(t+1) = x + c + A x + H (unique x_i x_j) + B u: with tiny alphas the closed-form fit
+    # recovers every operator, and predict reproduces the next state.
+    from Baselines.Forecast.Classical.OpInf import OpInf
+    rng=np.random.default_rng(0)
+    c=np.array([0.01,-0.02]); A=np.array([[-0.1,0.05],[0.02,-0.2]])
+    H=np.array([[0.03,-0.01,0.02],[0.0,0.04,-0.03]]); B=np.array([0.1,-0.05])
+    x=rng.normal(size=(400,2)); u=rng.normal(size=400)
+    quadratic=np.column_stack((x[:,0]**2,x[:,0]*x[:,1],x[:,1]**2))
+    target=x+c+x@A.T+quadratic@H.T+u[:,None]*B
+    samples=windows(x[:,None].astype(np.float32),u[:,None].astype(np.float32),target[:,None].astype(np.float32))
+    model=OpInf(alpha=1e-10,quadratic_alpha=1e-10).fit(DataLoader(samples,batch_size=64))
+    # Layout [x | u | quadratic | 1], one output column per latent.
+    np.testing.assert_allclose(model.weights[:2].T,A,atol=1e-4)
+    np.testing.assert_allclose(model.weights[2],B,atol=1e-4)
+    np.testing.assert_allclose(model.weights[3:6].T,H,atol=1e-4)
+    np.testing.assert_allclose(model.weights[6],c,atol=1e-4)
+    np.testing.assert_allclose(model.predict(x[:5,None],u[:5,None]),target[:5],atol=1e-4)
+
+
+def test_opinf_penalties_and_markov_check():
+    from Baselines.Forecast.Classical.OpInf import OpInf
+    model=OpInf(alpha=2.0,quadratic_alpha=50.0)
+    model.features(np.ones((1,1,3)),np.ones((1,1)))
+    p=model.penalties(3+1+6+1)
+    np.testing.assert_allclose(p[:4],2.0)
+    np.testing.assert_allclose(p[4:10],50.0)
+    assert p[-1]==2.0  # The constant c is regularized with A and B, as in McQuarrie et al.
+    assert OpInf(alpha=3.0).quadratic_alpha==3.0
+    for bad in ({'Nx':1},{'Ni':2}):
+        with pytest.raises(ValueError,match='Markovian'):
+            OpInf(**bad)
+    with pytest.raises(ValueError,match='quadratic_alpha'):
+        OpInf(quadratic_alpha=-1)
+
+
+def test_opinf_streamed_qr_matches_augmented_least_squares():
+    # The streamed QR (several folds: batches of 16, 16 features + 3 outputs) must give the
+    # minimizer of the Tikhonov-augmented system, including a huge quadratic_alpha where the
+    # normal equations lose the solution.
+    import scipy.linalg
+    from Baselines.Forecast.Classical.OpInf import OpInf
+    rng=np.random.default_rng(1)
+    x=rng.normal(scale=50,size=(300,3)); u=rng.normal(size=300); y=x+rng.normal(size=(300,3))
+    samples=windows(x[:,None],u[:,None],y[:,None])
+    for alpha,quadratic in ((1e-6,1e3),(1e-2,1e14),(0.0,1e2)):
+        model=OpInf(alpha=alpha,quadratic_alpha=quadratic).fit(DataLoader(samples,batch_size=16))
+        D=model.features(x[:,None],u[:,None]); Y=y-x
+        G=np.diag(np.sqrt(len(D)*model.penalties(D.shape[1])))
+        reference=scipy.linalg.lstsq(np.vstack((D,G)),np.vstack((Y,np.zeros((len(G),3)))))[0]
+        np.testing.assert_allclose(model.weights,reference,rtol=1e-6,atol=1e-9)
+
+
+def test_opinf_zero_penalty_dependent_features_minimum_norm():
+    # With both penalties zero, dependent features (x3 = x1 + x2, x4 = 2 x1 - x2, hence dependent
+    # quadratic columns) leave R11 singular: the fit must be the minimum-norm least-squares
+    # solution, not weights amplified by rounding-level pivots.
+    from Baselines.Forecast.Classical.OpInf import OpInf
+    for seed in range(4):
+        rng=np.random.default_rng(seed)
+        a=rng.normal(scale=70,size=(400,1)); b=rng.normal(scale=30,size=(400,1))
+        x=np.hstack((a,b,a+b,2*a-b)); u=rng.normal(size=400); y=x+rng.normal(size=x.shape)
+        model=OpInf(alpha=0.0,quadratic_alpha=0.0).fit(DataLoader(windows(x[:,None],u[:,None],y[:,None]),batch_size=16))
+        D=model.features(x[:,None],u[:,None])
+        reference=np.linalg.lstsq(D,y-x,rcond=None)[0]
+        np.testing.assert_allclose(model.weights,reference,rtol=1e-5,atol=1e-8)
+
+
+def test_dmdc_is_markovian_arx():
+    # DMDc = ARX with Nx = Ni = 0: identical weights on the same data, delays rejected.
+    from Baselines.Forecast.Classical.ARX import ARX
+    from Baselines.Forecast.Classical.DMDc import DMDc
+    rng=np.random.default_rng(0)
+    x=rng.normal(size=(200,3)); u=rng.normal(size=200); y=0.9*x+0.1*u[:,None]
+    loader=DataLoader(windows(x[:,None],u[:,None],y[:,None]),batch_size=32)
+    np.testing.assert_allclose(DMDc(alpha=1e-6).fit(loader).weights,ARX(Nx=0,Ni=0,alpha=1e-6).fit(loader).weights)
+    assert DMDc.dataset_ranges=={'Nx':0,'Ni':0,'horizon':1}
+    for bad in ({'Nx':1},{'Ni':1}):
+        with pytest.raises(ValueError,match='Markovian'):
+            DMDc(**bad)
