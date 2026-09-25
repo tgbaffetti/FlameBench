@@ -943,3 +943,66 @@ def test_dmdc_is_markovian_arx():
     for bad in ({'Nx':1},{'Ni':1}):
         with pytest.raises(ValueError,match='Markovian'):
             DMDc(**bad)
+
+
+def exact_dmdc_data(rng, n, samples, basis=None):
+    # One-step pairs of x(t+1) = A x + B u, optionally confined to the span of basis.
+    rank = n if basis is None else basis.shape[1]
+    A = 0.9*np.linalg.qr(rng.normal(size=(rank,rank)))[0]; B = rng.normal(size=(rank,1))
+    z = rng.normal(size=(samples,rank)); u = rng.normal(size=(samples,1)); y = z@A.T+u@B.T
+    lift = (lambda v: v) if basis is None else (lambda v: v@basis.T)
+    return lift(z), u, lift(y), (lambda x, f: lift((x if basis is None else x@basis)@A.T+f@B.T))
+
+
+def exact_dmdc_loader(x, u, y):
+    return DataLoader(windows(x[:,None].astype(np.float32), u.astype(np.float32), y[:,None].astype(np.float32)),
+                      batch_size=64)
+
+
+def test_exact_dmdc_recovers_linear_system():
+    from Baselines.Forecast.Classical.DMDc import ExactDMDc
+    rng=np.random.default_rng(0)
+    # Full rank: p = n + 1, r = n. Low rank: data in a 3-D subspace of R^30, p = 4, r = 3.
+    for n, basis, p, r in ((5, None, 6, 5), (30, np.linalg.qr(rng.normal(size=(30,3)))[0], 4, 3)):
+        x, u, y, truth = exact_dmdc_data(rng, n, 300, basis)
+        model = ExactDMDc(p=p, r=r).fit(exact_dmdc_loader(x, u, y))
+        xt, ut, _, _ = exact_dmdc_data(np.random.default_rng(1), n, 20, basis)
+        np.testing.assert_allclose(model.predict(xt[:,None], ut), truth(xt, ut), atol=2e-4)
+
+
+def test_exact_dmdc_is_least_squares_projected_on_output_modes():
+    # Untruncated Omega (p = n + 1): A~ = U^^T A_ls U^ and B~ = U^^T B_ls, with [A_ls B_ls] the
+    # least-squares operators of the full data, whatever the output rank r.
+    from Baselines.Forecast.Classical.DMDc import ExactDMDc
+    rng=np.random.default_rng(2)
+    n=6; x=rng.normal(size=(400,n)); u=rng.normal(size=(400,1))
+    y=x@(0.5*rng.normal(size=(n,n))).T+u@rng.normal(size=(1,n))+0.1*rng.normal(size=(400,n))
+    model=ExactDMDc(p=n+1, r=3).fit(exact_dmdc_loader(x, u, y))
+    operators=np.linalg.lstsq(np.hstack((x,u)), y, rcond=None)[0].T  # [A_ls B_ls], column form
+    U=model.basis.astype(np.float64)
+    np.testing.assert_allclose(model.A, U.T@operators[:,:n]@U, atol=1e-4)
+    np.testing.assert_allclose(model.B, U.T@operators[:,n:], atol=1e-4)
+
+
+def test_exact_dmdc_checks():
+    from Baselines.Forecast.Classical.DMDc import ExactDMDc
+    assert ExactDMDc.dataset_ranges=={'Nx':0,'Ni':0,'horizon':1} and ExactDMDc.deterministic
+    for bad in ({'Nx':1},{'Ni':1}):
+        with pytest.raises(ValueError,match='Markovian'):
+            ExactDMDc(**bad)
+    with pytest.raises(ValueError,match='r <= p'):
+        ExactDMDc(p=8, r=16)
+
+
+def test_exact_dmdc_end_to_end(metadata, tmp_path):
+    from Experiments.run import fit, test as run_test
+    path = tmp_path / 'metadata.json'
+    path.write_text(json.dumps(metadata))
+    cfg = {'metadata': str(path), 'output': str(tmp_path / 'run'), 'run_name': 'dmdc_exact', 'seed': 42,
+           **SETTINGS, 'compressor': {'name': 'identity'}, 'dataset': {'Nx': 0, 'Ni': 0, 'horizon': 1},
+           'forecaster': {'name': 'dmdc_exact', 'p': 4, 'r': 3}, 'evaluation': {'heat_release': True}}
+    assert np.isfinite(fit(cfg))
+    result = run_test(cfg)['sine']
+    assert result['status'] in {'completed', 'diverged'}
+    if result['status'] == 'completed':
+        assert np.isfinite(result['mean_nrmse'])

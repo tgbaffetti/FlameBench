@@ -36,7 +36,7 @@ DataProcessing/         disk-backed datasets, conversion, scaling, latent cache
 Baselines/
   Forecast/
     Model.py            fit, predict, test and HPO interface
-    Classical/          ARX, NARX, DMDc, Operator Inference (OpInf) and latent persistence
+    Classical/          ARX, NARX, DMDc (on POD and exact, full field), Operator Inference (OpInf) and latent persistence
     DL/                 shared training loop; GRU, LSTM, CNN, Transformer; FNO-2D, DeepONet, Transolver (full field)
   OrderReduction/
     Compressor.py       fit, encode, decode interface

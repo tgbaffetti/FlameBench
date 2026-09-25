@@ -17,7 +17,7 @@ read -r -a seeds <<< "${SEEDS:-0 1 2 3 4 5 6 7 8 9}"
 if (( $# )); then
     pairs=("$@")
 else
-    pairs=(constant pod_dmdc pod_opinf identity_fno)  # DMDc and OpInf are POD-only; FNO works on the full field.
+    pairs=(constant pod_dmdc pod_opinf identity_dmdc_exact identity_fno)  # OpInf is POD-only; exact DMDc and FNO work on the full field.
     for compressor in pod cae cvae vit_ae; do
         for forecaster in arx gru lstm cnn transformer; do
             pairs+=("${compressor}_${forecaster}")

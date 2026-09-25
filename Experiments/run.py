@@ -36,7 +36,7 @@ from Baselines.OrderReduction.DL.CAE import CAE, CVAE
 from Baselines.OrderReduction.DL.ViTAE import ViTAE
 from Baselines.Forecast.Classical.ARX import ARX, NARX, Constant
 from Baselines.Forecast.Classical.OpInf import OpInf
-from Baselines.Forecast.Classical.DMDc import DMDc
+from Baselines.Forecast.Classical.DMDc import DMDc, ExactDMDc
 from Baselines.Forecast.DL.DLModel import DLModel
 from Baselines.Forecast.DL.networks import GRU, LSTM, CNN, Transformer
 from Baselines.Forecast.DL.deeponet import DeepONet
@@ -50,7 +50,7 @@ from .pipeline import Pipeline
 from utils import seed_everything, write_json, provenance
 
 COMPRESSORS = {"pod": POD, "cae": CAE, "cvae": CVAE, "vit_ae": ViTAE, "identity": Identity}
-FORECASTERS = {"arx": ARX, "narx": NARX, "opinf": OpInf, "dmdc": DMDc, "constant": Constant, "gru": GRU, "lstm": LSTM, "cnn": CNN, "transformer": Transformer, "deeponet": DeepONet, "transolver": Transolver, "fno": FNO}
+FORECASTERS = {"arx": ARX, "narx": NARX, "opinf": OpInf, "dmdc": DMDc, "dmdc_exact": ExactDMDc, "constant": Constant, "gru": GRU, "lstm": LSTM, "cnn": CNN, "transformer": Transformer, "deeponet": DeepONet, "transolver": Transolver, "fno": FNO}
 
 
 CONFIG_KEYS = {"metadata", "output", "run_name", "seed", "device", "cpu_threads", "validation_fraction", "blocks",
