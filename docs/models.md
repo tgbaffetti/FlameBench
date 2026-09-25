@@ -44,3 +44,30 @@ Bench2 comparison Forecasting models:
 - Galerkin POD
 - UNet
 - DMD
+
+
+
+
+
+
+TODO:
+1st
+- DMD
+- OpInf
+- FNO
+
+2nd
+- DeepOnet
+
+
+3rd
+- VitAE + transformer
+- VAE
+
+
+
+
+- Transolver
+
+- Sindy Sparse Identification of Non-Linear Dynamics
+- Discrete Empirical Interpolation Method

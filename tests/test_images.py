@@ -8,7 +8,7 @@ from DataProcessing.scaling import FeatureScaler
 from torch.utils.data import DataLoader
 from DataProcessing.Dataset import CompressorDataset, ForecasterDataset
 from Baselines.OrderReduction.Linear.POD import POD
-from Baselines.OrderReduction.DL.CAE import CAE
+from Baselines.OrderReduction.DL.CAE import CAE, CVAE
 from Baselines.OrderReduction.DL.ViTAE import ViTAE
 from Experiments.evaluation import evaluate
 
@@ -63,7 +63,7 @@ def test_image_pipeline_metrics(tmp_path, kind):
     compressors = {
         'pod': POD(rank=1, batch_size=3),
         'cae': CAE(rank=1, channels=(2, 4), padding=1, epochs=1, batch_size=3),
-        'cvae': CAE(rank=1, channels=(2, 4), padding=1, epochs=1, batch_size=3, beta=1e-4),
+        'cvae': CVAE(rank=1, channels=(2, 4), padding=1, epochs=1, batch_size=3),
         'vit_ae': ViTAE(rank=1, channels=(2, 4), padding=1, hidden=8, heads=2, layers=1, epochs=1, batch_size=3),
     }
     compressor = compressors[kind]
@@ -202,6 +202,14 @@ def test_compressor_loss_option_multiple_epochs(tmp_path, loss):
     assert np.isfinite(compressor.encode(np.stack([training[0].numpy(), training[1].numpy()]))).all()
     with pytest.raises(ValueError, match='loss'):
         CAE(loss='l3')
+
+
+def test_cvae_is_the_variational_cae_with_fixed_beta():
+    assert CVAE.name != CAE.name and 'beta' not in CVAE.hyperparameters_ranges
+    compressor = CVAE.build({'levels': 2, 'base_channels': 8}, rank=4)
+    assert compressor.beta == 1e-4 and compressor.channels == (8, 16) and compressor.encoder_outputs == 8
+    with pytest.raises(ValueError, match='beta > 0'):
+        CVAE(beta=0)
 
 
 @pytest.mark.parametrize('shape', [(11, 206, 104), (2, 7, 5)])

@@ -41,7 +41,7 @@ Baselines/
   OrderReduction/
     Compressor.py       fit, encode, decode interface
     Linear/             legacy randomized POD
-    DL/                 dense AE/VAE, convolutional CAE, visual-attention ViTAE
+    DL/                 dense AE/VAE, convolutional CAE and its variational CVAE, visual-attention ViTAE
 Experiments/
   Configs/              plain JSON experiment settings
   Results/              per-run checkpoints, metrics and logs (not committed)
@@ -225,7 +225,7 @@ is not always faster than full SVD for dense matrices; benchmark this dataset be
 choosing a backend. See [torch.svd_lowrank](https://docs.pytorch.org/docs/stable/generated/torch.svd_lowrank.html)
 and [DataLoader options](https://docs.pytorch.org/docs/stable/data.html).
 `persistence` predicts a constant *latent* state, so includes compressor error.
-All compressors read images. POD and dense AE/VAE flatten them; CAE uses spatial
+All compressors read images. POD and dense AE/VAE flatten them; CAE (and CVAE, its variational form) uses spatial
 convolutions and ViTAE uses attention between image patches. RAE, mesh models and
 world models remain candidates in [the method plan](docs/methods.md).
 

@@ -56,3 +56,15 @@ class CAE(AE):
         size = input_shape_chw[0] * input_shape_chw[1] * input_shape_chw[2]
         self.encoder = nn.Sequential(*encoder, nn.Flatten(), nn.Linear(size, self.encoder_outputs))
         self.decoder = nn.Sequential(nn.Linear(self.rank, size), nn.Unflatten(1, input_shape_chw), *decoder)
+
+
+class CVAE(CAE):
+    """Variational CAE: the CAE networks with beta > 0 (see AE). beta is fixed, not tuned: stage 1
+    selects by reconstruction error, which the KL term only worsens, so a tuned beta would go to
+    its lower bound. A separate name keeps its runs and stage-1 cache apart from the CAE."""
+    name = "cvae"
+
+    def __init__(self, beta=1e-4, **kwargs):
+        if beta <= 0:
+            raise ValueError("CVAE needs beta > 0 (beta = 0 is the CAE)")
+        super().__init__(beta=beta, **kwargs)

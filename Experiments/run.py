@@ -32,7 +32,7 @@ from DataProcessing.Dataset import CompressorDataset, Dataset, ForecasterDataset
 from Baselines.OrderReduction.Linear.POD import POD
 from Baselines.OrderReduction.Identity import Identity
 from Baselines.OrderReduction.DL.AE import AE
-from Baselines.OrderReduction.DL.CAE import CAE
+from Baselines.OrderReduction.DL.CAE import CAE, CVAE
 from Baselines.OrderReduction.DL.ViTAE import ViTAE
 from Baselines.Forecast.Classical.ARX import ARX, NARX, Constant
 from Baselines.Forecast.Classical.OpInf import OpInf
@@ -49,7 +49,7 @@ from .paths import new_run_name, run_directory
 from .pipeline import Pipeline
 from utils import seed_everything, write_json, provenance
 
-COMPRESSORS = {"pod": POD, "cae": CAE, "vit_ae": ViTAE, "identity": Identity}
+COMPRESSORS = {"pod": POD, "cae": CAE, "cvae": CVAE, "vit_ae": ViTAE, "identity": Identity}
 FORECASTERS = {"arx": ARX, "narx": NARX, "opinf": OpInf, "dmdc": DMDc, "constant": Constant, "gru": GRU, "lstm": LSTM, "cnn": CNN, "transformer": Transformer, "deeponet": DeepONet, "transolver": Transolver, "fno": FNO}
 
 

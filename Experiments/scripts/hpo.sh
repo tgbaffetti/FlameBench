@@ -18,7 +18,7 @@ if (( $# )); then
     pairs=("$@")
 else
     pairs=(constant pod_dmdc pod_opinf identity_fno)  # DMDc and OpInf are POD-only; FNO works on the full field.
-    for compressor in pod cae vit_ae; do
+    for compressor in pod cae cvae vit_ae; do
         for forecaster in arx gru lstm cnn transformer; do
             pairs+=("${compressor}_${forecaster}")
         done
