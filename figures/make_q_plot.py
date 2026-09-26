@@ -12,9 +12,8 @@ CASES = ["sine_f10_A03", "sine_f10_A05", "sine_f40_A03", "sine_f40_A05", "step_A
 # (pair glob, label, categorical color slot)
 MODELS = [("cae_arx_2026*", "CAE+ARX", "#2a78d6"),
           ("pod_arx_2026*", "POD+ARX", "#eb6834"),
-          ("pod_transformer_2026*", "POD+Transformer", "#1baf7a"),
-          ("pod_narx_2026*", "POD+NARX", "#eda100"),
-          ("pod_gru_2026*", "POD+GRU", "#e87ba4")]
+          ("pod_narx_2026*", "POD+NARX", "#1baf7a"),
+          ("pod_transformer_2026*", "POD+Transformer", "#eda100")]
 
 plt.rcParams.update({"font.size": 10, "axes.linewidth": 0.6, "axes.edgecolor": "#9aa0a6",
                      "xtick.color": "#5f6368", "ytick.color": "#5f6368",
