@@ -24,6 +24,7 @@ behind epsilon_Q: front errors can cancel in the sum, and cell volume grows with
 """
 import argparse
 import json
+import os
 import pickle
 import sys
 from contextlib import contextmanager
@@ -37,7 +38,7 @@ import matplotlib.pyplot as plt
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import Experiments.evaluation as evaluation  # noqa: E402
-from DataProcessing.Dataset import ForecasterDataset  # noqa: E402
+from DataProcessing.Dataset import Dataset, ForecasterDataset  # noqa: E402
 from DataProcessing.metadata import load_metadata  # noqa: E402
 from Experiments.run import to_device  # noqa: E402
 from utils import seed_everything, provenance  # noqa: E402
@@ -59,8 +60,13 @@ def check_environment(directory):
 def setup(directory, device=None, metadata_path=None):
     """Experiments/run.py test() for a saved run, without its W&B logger."""
     config = json.loads((directory / "config.json").read_text())
+    Dataset.in_memory = config.get("in_memory", False)  # as Experiments/run.py main
     seed_everything(config.get("seed", 42))
     torch.set_num_threads(config.get("cpu_threads", 4))
+    from threadpoolctl import threadpool_info
+    blas = ", ".join(f"{p['internal_api']} {p.get('version')} threads={p['num_threads']}" for p in threadpool_info())
+    print(f"  seed {config.get('seed', 42)}, torch threads {torch.get_num_threads()}, device {device or config.get('device')}, "
+          f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')}, cores {os.cpu_count()}, {blas}")
     with (directory / "model.pkl").open("rb") as file:
         scaler, compressor, model = pickle.load(file)
     device = device or config.get("device", "cpu")
