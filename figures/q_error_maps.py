@@ -50,19 +50,60 @@ def load_run(directory, device):
     return scaler, compressor, model, label.upper()
 
 
-def replay(scaler, compressor, model, dataset, case, lo, step):
-    """Predicted frame (physical units) at snapshot `step` of the steady-start test rollout."""
+def rollout(scaler, compressor, model, dataset, case, lo, last):
+    """Yield (k, latent prediction of snapshot k) for k = lo+1 .. last of the steady-start test
+    rollout, as Experiments/evaluation.py computes it."""
     x, phi = dataset.arrays(case)
     length = dataset.length
     initial = np.repeat(np.array(x[lo:lo + 1]), length, axis=0)
     states = keep_recent(compressor.encode(scaler.transform(initial))[None], dataset.Nx + 1)
-    for k in tqdm(range(lo + 1, step + 1), desc=f"{case['name']} -> step {step}", leave=False):
+    for k in tqdm(range(lo + 1, last + 1), desc=f"{case['name']} -> step {last}", leave=False):
         z = model.predict(states, forcing_window(phi, k, length, dataset.Ni))
         if not np.isfinite(z).all():
             raise FloatingPointError(f"{case['name']}: rollout nonfinite at step {k}")
+        yield k, z
+        states = keep_recent(np.concatenate((states[:, 1:], z[:, None]), axis=1), dataset.Nx + 1)
+
+
+def replay(scaler, compressor, model, dataset, case, lo, step):
+    """Predicted frame (physical units) at snapshot `step` of the steady-start test rollout."""
+    for k, z in rollout(scaler, compressor, model, dataset, case, lo, step):
         if k == step:
             return scaler.inverse(compressor.decode(z))[0]
-        states = keep_recent(np.concatenate((states[:, 1:], z[:, None]), axis=1), dataset.Nx + 1)
+
+
+def trace(runs, datasets, metadata, q_index):
+    """Replayed against stored Q at every step, to tell an input difference (off from step 1) from
+    numerical drift (starts near float rounding and grows); plus the run's recorded metadata."""
+    for (directory, scaler, compressor, model, label), dataset in zip(runs, datasets):
+        print(f"== {label}: {directory}")
+        recorded = json.loads((directory / "metadata.resolved.json").read_text())
+        for key in ("dt", "fields", "grid_indices"):
+            if recorded.get(key) != metadata.get(key):
+                print(f"  metadata {key} differs: run {recorded.get(key)} / now {metadata.get(key)}")
+        then = {case["name"]: case for case in recorded["cases"]}
+        rows, columns = dataset.grid_indices
+        volumes = dataset.volumes.astype(np.float64)
+        for case, lo, hi in dataset.segments:
+            for key in ("data", "phi"):
+                if then.get(case["name"], {}).get(key) != case[key]:
+                    print(f"  {case['name']} {key} path differs: run {then.get(case['name'], {}).get(key)} / now {case[key]}")
+            q_file = directory / f"{case['name']}_Q.npz"
+            newer = Path(case["phi"]).stat().st_mtime > q_file.stat().st_mtime
+            stored, _, first = stored_q(directory, case, lo)
+            relative = np.empty(len(stored))
+            for k, z in rollout(scaler, compressor, model, dataset, case, lo, first + len(stored) - 1):
+                frame = scaler.inverse(compressor.decode(z))[0]
+                q = float(frame[q_index][rows, columns].astype(np.float64) @ volumes)
+                relative[k - first] = abs(q - stored[k - first]) / max(abs(stored[k - first]), 1e-30)
+            marks = [s for s in (1, 2, 3, 5, 10, 20, 50, 100, 200, 500, 1000, 2000) if s <= len(relative)]
+            above = {threshold: (int(np.argmax(relative > threshold)) + 1 if (relative > threshold).any() else None)
+                     for threshold in (1e-6, 1e-3, 1e-2)}
+            print(f"  {case['name']:14s} phi file newer than stored Q: {newer}")
+            print("    relative |Q_replay - Q_stored| at step " +
+                  "  ".join(f"{s}: {relative[s - 1]:.1e}" for s in marks))
+            print(f"    first step above 1e-6: {above[1e-6]}, 1e-3: {above[1e-3]}, 1e-2: {above[1e-2]}; "
+                  f"max {relative.max():.1e}")
 
 
 def stored_q(directory, case, lo):
@@ -78,13 +119,18 @@ def main():
     parser.add_argument("--metadata", default="Data/metadata.json")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--out", type=Path, default=ROOT / "figures" / "q_error")
+    parser.add_argument("--trace", action="store_true",
+                        help="only compare the replayed Q with the stored Q at every step, then exit")
     args = parser.parse_args()
-    args.out.mkdir(parents=True, exist_ok=True)
 
     metadata = load_metadata(args.metadata)
     q_index = metadata["fields"].index("mix:Q")
     runs = [(directory, *load_run(directory, args.device)) for directory in args.run]
     datasets = [ForecasterDataset(metadata, "test", Nx=model.Nx, Ni=model.Ni) for _, _, _, model, _ in runs]
+    if args.trace:
+        trace(runs, datasets, metadata, q_index)
+        return
+    args.out.mkdir(parents=True, exist_ok=True)
     reference_dataset = datasets[0]
     rows, columns = reference_dataset.grid_indices
     mask, volumes = reference_dataset.mask, reference_dataset.volumes.astype(np.float64)
