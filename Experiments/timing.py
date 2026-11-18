@@ -17,11 +17,11 @@ forecasters and POD are numpy and run on the CPU whatever --device says; --devic
 torch models (autoencoders, neural forecasters, FNO). The replayed epsilon_Q is compared with the
 run's stored metrics.json, to confirm the replay is the paper's model.
 
-The runs file lists one seed directory per line (blank lines and # comments are ignored). Run it
-alone on an idle GPU, e.g.
-  CUDA_VISIBLE_DEVICES=2 python -m Experiments.timing --runs-file timing_runs.txt --list
-  CUDA_VISIBLE_DEVICES=2 python -m Experiments.timing --runs-file timing_runs.txt --device cuda --threads 4
-  python -m Experiments.timing --runs-file timing_runs.txt --device cpu --threads 4 --name timing_cpu
+Each model is given as its seed directory with --run (repeatable), or listed one per line in a
+--runs-file. Run it alone on an idle GPU, e.g.
+  CUDA_VISIBLE_DEVICES=2 python -m Experiments.timing --run <dir>/seed_0 --run <dir>/seed_0 ... --list
+  CUDA_VISIBLE_DEVICES=2 python -m Experiments.timing --run ... --device cuda --threads 4
+  python -m Experiments.timing --run ... --device cpu --threads 4 --name timing_cpu
 """
 import argparse
 import json
@@ -41,14 +41,10 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "timing"
 
 
-def read_runs(path):
-    """{pair: seed directory} from a runs file; the pair is read from the run's config."""
+def read_runs(directories):
+    """{pair: seed directory}; the pair is read from each run's config."""
     runs = {}
-    for line in Path(path).read_text().splitlines():
-        line = line.split("#", 1)[0].strip()
-        if not line:
-            continue
-        directory = Path(line)
+    for directory in map(Path, directories):
         config = json.loads((directory / "config.json").read_text())
         pair = f"{config['compressor']['name']}_{config['forecaster']['name']}"
         if pair in runs:
@@ -111,14 +107,21 @@ def time_run(directory, device, threads, out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--runs-file", type=Path, required=True, help="one seed_N directory per line")
+    parser.add_argument("--run", type=Path, action="append", default=[], help="seed_N directory; repeat for each model")
+    parser.add_argument("--runs-file", type=Path, help="optional: one seed_N directory per line (# comments allowed)")
     parser.add_argument("--device", help="cuda or cpu (default: each run's config device)")
     parser.add_argument("--threads", type=int, help="torch CPU threads (default: each run's cpu_threads)")
     parser.add_argument("--name", default="timing", help="output name: timing/<name>.json and timing/<name>/")
     parser.add_argument("--list", action="store_true", help="only check and print the runs that would be timed")
     args = parser.parse_args()
 
-    runs = read_runs(args.runs_file)
+    directories = list(args.run)
+    if args.runs_file:
+        lines = (line.split("#", 1)[0].strip() for line in args.runs_file.read_text().splitlines())
+        directories += [line for line in lines if line]
+    if not directories:
+        parser.error("give the runs with --run (repeatable) or --runs-file")
+    runs = read_runs(directories)
     for pair, directory in runs.items():
         missing = [f for f in ("config.json", "model.pkl", "metadata.resolved.json", "metrics.json") if not (directory / f).exists()]
         print(f"{pair:22s} {directory}" + (f"   MISSING {missing}" if missing else ""))
