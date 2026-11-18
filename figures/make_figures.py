@@ -74,7 +74,7 @@ for ax, img, name, unit in zip(axes, snap, fields, units):
     shown = np.where(mask, img, np.nan)
     title = name
     if name == "mix:Q":
-        shown, title = shown / 1e9, "Q [GW/m$^3$]"
+        shown, title = shown / 1e9, r"$\dot{Q}$ [GW/m$^3$]"
     elif name == "p":
         shown, title = shown - np.nanmean(shown), "p$'$ [Pa]"
     im = ax.imshow(shown, origin="upper", cmap="viridis", aspect="equal")
@@ -111,10 +111,10 @@ for ax, f, s in zip(axes, frames, steps):
     for sp in ax.spines.values():
         sp.set_visible(False)
 cb = fig.colorbar(im, ax=axes, orientation="vertical", fraction=0.025, pad=0.02)
-cb.set_label(r"Q [GW/m$^3$]", fontsize=8)
+cb.set_label(r"$\dot{Q}$ [GW/m$^3$]", fontsize=8)
 cb.ax.tick_params(labelsize=6)
 cb.outline.set_visible(False)
-fig.suptitle("heat release Q over one forcing period — sine 10 Hz, A = 0.5", fontsize=10)
+fig.suptitle(r"heat release $\dot{Q}$ over one forcing period — sine 10 Hz, A = 0.5", fontsize=10)
 for ext in ("pdf", "png"):
     fig.savefig(OUT / f"q_cycle.{ext}", dpi=200, bbox_inches="tight")
 plt.close(fig)

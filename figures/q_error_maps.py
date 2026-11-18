@@ -211,7 +211,7 @@ def main():
             else:
                 picture = image((results[label, name] - truth[name]) * volumes * 1e3)
                 cmap, low, high = "RdBu_r", -share_max, share_max
-                ax.set_xlabel(f"ΔQ = {100 * summary[name]['runs'][label]['dQ_relative']:+.1f}%", fontsize=8)
+                ax.set_xlabel(f"ΔQ̇ = {100 * summary[name]['runs'][label]['dQ_relative']:+.1f}%", fontsize=8)
             shown = ax.imshow(picture, origin="upper", cmap=colormap(cmap), vmin=low, vmax=high, aspect="equal")
             ax.set_xticks([])
             ax.set_yticks([])

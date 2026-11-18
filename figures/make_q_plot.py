@@ -40,7 +40,7 @@ def draw(ax, case, legend=False):
     margin = 0.4 * (reference.max() - reference.min()) or 0.4 * abs(reference.mean())
     ax.set_ylim(reference.min() - margin, reference.max() + margin)
     ax.set_xlim(0, 1)
-    ax.set_title(f"Integrated Q — {case}", fontsize=10)
+    ax.set_title(rf"Integrated $\dot{{Q}}$ — {case}", fontsize=10)
     ax.grid(True, color="#e8eaed", linewidth=0.5)
     ax.set_axisbelow(True)
     for sp in ("top", "right"):
@@ -52,7 +52,7 @@ for case in CASES:
     fig, ax = plt.subplots(figsize=(8.6, 4.0))
     draw(ax, case, legend=True)
     ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Integrated heat release Q (J/s)")
+    ax.set_ylabel(r"Integrated heat release $\dot{Q}$ (J/s)")
     fig.tight_layout()
     for ext in ("pdf", "png"):
         fig.savefig(OUT / f"q_timeseries_{case}.{ext}", dpi=200, bbox_inches="tight")
@@ -65,7 +65,7 @@ for k, (ax, case) in enumerate(zip(axes.flat, CASES)):
     if k >= 4:
         ax.set_xlabel("Time (s)")
     if k % 2 == 0:
-        ax.set_ylabel("Q (J/s)")
+        ax.set_ylabel(r"$\dot{Q}$ (J/s)")
 fig.tight_layout()
 for ext in ("pdf", "png"):
     fig.savefig(OUT / f"q_timeseries_all.{ext}", dpi=200, bbox_inches="tight")
