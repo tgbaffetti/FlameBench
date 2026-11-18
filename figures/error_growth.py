@@ -32,7 +32,10 @@ from matplotlib import ticker
 
 ROOT = Path(__file__).resolve().parent.parent
 RESULTS = ROOT / "Experiments" / "Results"
-CASES = ["sine_f10_A03", "sine_f10_A05", "sine_f40_A03", "sine_f40_A05", "step_A03", "step_A05"]
+# Default order fills the grid row by row: columns are the input types, rows the amplitudes.
+CASES = ["sine_f10_A03", "sine_f40_A03", "step_A03", "sine_f10_A05", "sine_f40_A05", "step_A05"]
+COLUMNS = 3          # cases per row of the grid
+PANEL = (2.1, 1.45)  # inches per panel: the figure is drawn near its printed size (about \textwidth)
 # Rollout-horizon bins of FieldMetrics: label -> 0-based slice of the forecast steps.
 BINS = {"1-10": slice(0, 10), "11-100": slice(10, 100), "101-1000": slice(100, 1000), "1001+": slice(1000, None)}
 # (label, pair prefix, color); colors as in make_q_plot.py where the model appears there
@@ -42,7 +45,7 @@ MODELS = [("POD+ARX", "pod_arx", "#eb6834"),
           ("FNO", "identity_fno", "#8e44ad"),
           ("Constant", "identity_constant", "#7f7f7f")]
 
-plt.rcParams.update({"font.size": 9, "axes.linewidth": 0.6, "axes.edgecolor": "#9aa0a6",
+plt.rcParams.update({"font.size": 7.5, "axes.linewidth": 0.6, "xtick.labelsize": 6.5, "ytick.labelsize": 6.5, "axes.edgecolor": "#9aa0a6",
                      "xtick.color": "#5f6368", "ytick.color": "#5f6368",
                      "axes.labelcolor": "#202124", "text.color": "#202124"})
 
@@ -71,8 +74,11 @@ def title(case):
 
 
 def plain_log_ticks(ax):
-    """Log axis labelled with plain decimals at 1, 2 and 5 per decade; minor ticks unlabelled."""
-    ax.yaxis.set_major_locator(ticker.LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
+    """Log axis labelled with plain decimals; minor ticks unlabelled. Call after plotting: axes
+    spanning under 1.6 decades get labels at 1, 2 and 5 per decade, wider ones at each decade."""
+    low, high = ax.get_ylim()
+    subs = (1.0, 2.0, 5.0) if np.log10(high / low) < 1.6 else (1.0,)
+    ax.yaxis.set_major_locator(ticker.LogLocator(base=10, subs=subs))
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda value, _: f"{value:g}"))
     ax.yaxis.set_minor_formatter(ticker.NullFormatter())
 
@@ -122,35 +128,52 @@ def main():
             if nrmse:
                 table[label, case] = {"nrmse": np.array(nrmse), "q": np.array(q)}
 
-    fig, axes = plt.subplots(2, len(args.cases), figsize=(2.9 * len(args.cases), 5.2), squeeze=False)
+    # Grid: at most COLUMNS cases per row; each case is a field-nRMSE panel directly above its
+    # heat-release panel, and a spacer row separates the rows of cases, so the pairs read as units.
+    ncols = min(COLUMNS, len(args.cases))
+    case_rows = -(-len(args.cases) // ncols)
+    spacer = 0.35  # height of the gap between rows of cases, as a fraction of a panel
+    legend, title_space, bottom_space = 0.3, 0.2, 0.45  # inches: legend row, first titles, x label
+    ratios = [1, 1] + [spacer, 1, 1] * (case_rows - 1)
+    height = sum(ratios) * PANEL[1] + legend + title_space + bottom_space
+    fig = plt.figure(figsize=(ncols * PANEL[0], height))
+    grid = fig.add_gridspec(len(ratios), ncols, height_ratios=ratios, hspace=0.12, wspace=0.42,
+                            left=0.6 / (ncols * PANEL[0]), right=0.99,
+                            bottom=bottom_space / height, top=1 - (legend + title_space) / height)
+    row_of = [3 * r for r in range(case_rows)]  # grid row of each case row's top panel
     columns = [list(BINS).index(b) for b in shown]
     x = np.arange(len(shown))
-    for column, case in enumerate(args.cases):
-        for row, key in enumerate(("nrmse", "q")):
-            ax = axes[row, column]
+    for index in range(case_rows * ncols):
+        row, col = row_of[index // ncols], index % ncols
+        if index >= len(args.cases):
+            continue
+        top, bottom = fig.add_subplot(grid[row, col]), fig.add_subplot(grid[row + 1, col])
+        case = args.cases[index]
+        for ax, key in ((top, "nrmse"), (bottom, "q")):
             for label, (run, color) in runs.items():
                 if (label, case) not in table:
                     continue
                 values = table[label, case][key][:, columns]
                 mean, low, high = values.mean(axis=0), values.min(axis=0), values.max(axis=0)
                 ax.errorbar(x, mean, yerr=[mean - low, high - mean] if len(values) > 1 else None, color=color,
-                            marker="o", ms=3.5, lw=1.2, capsize=2, label=label)
-            ax.set_xticks(x, shown, fontsize=7)
+                            marker="o", ms=2.8, lw=1.0, elinewidth=0.8, capsize=1.5, label=label)
+            ax.set_xticks(x, shown if ax is bottom else [])
             ax.set_yscale("log")
-            plain_log_ticks(ax)
+            plain_log_ticks(ax)  # after plotting: the labels depend on the data range
             ax.grid(True, color="#e8eaed", linewidth=0.5)
             ax.set_axisbelow(True)
             for spine in ("top", "right"):
                 ax.spines[spine].set_visible(False)
-        axes[0, column].set_title(title(case), fontsize=9)
-        axes[1, column].set_xlabel("rollout steps", fontsize=8)
-    axes[0, 0].set_ylabel("field nRMSE")
-    axes[1, 0].set_ylabel(r"heat-release error $\varepsilon_{\dot Q}$")
+        top.set_title(title(case), fontsize=8)
+        if index % ncols == 0:
+            top.set_ylabel("field nRMSE")
+            bottom.set_ylabel(r"heat-release error $\varepsilon_{\dot Q}$")
+        if index // ncols == case_rows - 1 or index + ncols >= len(args.cases):
+            bottom.set_xlabel("rollout steps")
     # One legend for the whole figure, in a row above the panels, so it never covers data.
-    handles = [plt.Line2D([], [], color=color, marker="o", ms=3.5, lw=1.2) for _, (_, color) in runs.items()]
-    fig.tight_layout(rect=(0, 0, 1, 0.94))
-    fig.legend(handles, list(runs), loc="upper center", ncol=len(runs), frameon=False, fontsize=8,
-               bbox_to_anchor=(0.5, 1.0))
+    handles = [plt.Line2D([], [], color=color, marker="o", ms=2.8, lw=1.0) for _, (_, color) in runs.items()]
+    fig.legend(handles, list(runs), loc="upper center", ncol=len(runs), frameon=False, fontsize=7.5,
+               bbox_to_anchor=(0.5, 1.0), handlelength=1.6, columnspacing=1.2)
     for ext in ("pdf", "png"):
         fig.savefig(ROOT / "figures" / f"{args.name}.{ext}", dpi=200, bbox_inches="tight")
     print(f"saved figures/{args.name}.pdf/.png/.json")
