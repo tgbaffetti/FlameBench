@@ -32,6 +32,7 @@ import time
 from pathlib import Path
 import numpy as np
 import torch
+from threadpoolctl import threadpool_info, threadpool_limits
 from DataProcessing.Dataset import Dataset, ForecasterDataset
 from DataProcessing.metadata import load_metadata
 from Experiments.run import to_device
@@ -110,7 +111,9 @@ def main():
     parser.add_argument("--run", type=Path, action="append", default=[], help="seed_N directory; repeat for each model")
     parser.add_argument("--runs-file", type=Path, help="optional: one seed_N directory per line (# comments allowed)")
     parser.add_argument("--device", help="cuda or cpu (default: each run's config device)")
-    parser.add_argument("--threads", type=int, help="torch CPU threads (default: each run's cpu_threads)")
+    parser.add_argument("--threads", type=int,
+                        help="CPU threads of torch and of numpy's BLAS/OpenMP pools (default: torch as each "
+                             "run's cpu_threads, numpy's pools unlimited, i.e. one thread per core)")
     parser.add_argument("--name", default="timing", help="output name: timing/<name>.json and timing/<name>/")
     parser.add_argument("--list", action="store_true", help="only check and print the runs that would be timed")
     args = parser.parse_args()
@@ -128,9 +131,14 @@ def main():
     print(f"{len(runs)} runs")
     if args.list:
         return
+    # numpy's BLAS (POD decoding, closed-form forecasters, exact DMDc) would otherwise start one
+    # thread per core at every step: on a shared machine that adds millisecond stalls.
+    if args.threads:
+        threadpool_limits(args.threads)
     hardware = {"gpu": torch.cuda.get_device_name() if torch.cuda.is_available() else None,
                 "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
-                "cpu_count": os.cpu_count(), "torch": torch.__version__, "cuda": torch.version.cuda}
+                "cpu_count": os.cpu_count(), "torch": torch.__version__, "cuda": torch.version.cuda,
+                "threadpools": [(p["internal_api"], p.get("version"), p["num_threads"]) for p in threadpool_info()]}
     print(hardware)
     out = OUT / args.name
     path = OUT / f"{args.name}.json"
