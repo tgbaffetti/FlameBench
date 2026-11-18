@@ -28,6 +28,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib import ticker
 
 ROOT = Path(__file__).resolve().parent.parent
 RESULTS = ROOT / "Experiments" / "Results"
@@ -58,6 +59,22 @@ def benchmark_run(prefix):
         if "benchmark-v2" in tags and "_".join(names) == prefix:
             return run
     return None
+
+
+def title(case):
+    """'sine_f10_A05' -> 'Sine, 10 Hz, A = 0.5'; 'step_A03' -> 'Step, A = 0.3'."""
+    parts = case.split("_")
+    amplitude = f"A = {int(parts[-1][1:]) / 10:g}"
+    if parts[0] == "sine":
+        return f"Sine, {int(parts[1][1:])} Hz, {amplitude}"
+    return f"{parts[0].capitalize()}, {amplitude}"
+
+
+def plain_log_ticks(ax):
+    """Log axis labelled with plain decimals at 1, 2 and 5 per decade; minor ticks unlabelled."""
+    ax.yaxis.set_major_locator(ticker.LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
+    ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda value, _: f"{value:g}"))
+    ax.yaxis.set_minor_formatter(ticker.NullFormatter())
 
 
 def seeds(run):
@@ -120,11 +137,12 @@ def main():
                             marker="o", ms=3.5, lw=1.2, capsize=2, label=label)
             ax.set_xticks(x, shown, fontsize=7)
             ax.set_yscale("log")
+            plain_log_ticks(ax)
             ax.grid(True, color="#e8eaed", linewidth=0.5)
             ax.set_axisbelow(True)
             for spine in ("top", "right"):
                 ax.spines[spine].set_visible(False)
-        axes[0, column].set_title(case, fontsize=9)
+        axes[0, column].set_title(title(case), fontsize=9)
         axes[1, column].set_xlabel("rollout steps", fontsize=8)
     axes[0, 0].set_ylabel("field nRMSE")
     axes[1, 0].set_ylabel(r"heat-release error $\varepsilon_{\dot Q}$")
@@ -140,8 +158,8 @@ def main():
     def cell(values):
         return f"{values.mean():.3f} [{values.min():.3f},{values.max():.3f}]" if len(values) > 1 else f"{values[0]:.3f}"
 
-    for key, title in (("nrmse", "field nRMSE"), ("q", "heat-release error")):
-        print(f"\n{title}: mean [min, max] over seeds\n{'model':16s} {'case':13s} " + " ".join(f"{b:>22s}" for b in BINS))
+    for key, heading in (("nrmse", "field nRMSE"), ("q", "heat-release error")):
+        print(f"\n{heading}: mean [min, max] over seeds\n{'model':16s} {'case':13s} " + " ".join(f"{b:>22s}" for b in BINS))
         for (label, case), values in table.items():
             print(f"{label:16s} {case:13s} " + " ".join(f"{cell(values[key][:, i]):>22s}" for i in range(len(BINS))))
     out = {f"{label}|{case}": {"bins": list(BINS), "run": str(runs[label][0]),
