@@ -10,9 +10,9 @@ and the same seeds:
               the whole case like the top row, so the bins combine (frame-weighted, in
               quadrature) into the epsilon_Q of Table 5.
 Markers are the mean over seeds, bars span the minimum and maximum seed (deterministic models
-have one seed). Steps 1-10 are left out of the figure by default (--first-bin keeps them):
-there every model, the constant forecast included, is dominated by a short pressure transient of
-the reference data at the onset of forcing. They stay in the printed table and the JSON.
+have one seed). In steps 1-10 every model, the constant forecast included, is dominated by a
+short pressure transient of the reference data at the onset of forcing; --no-first-bin leaves
+that bin out of the figure (it stays in the printed table and the JSON).
 
 A run is the newest Experiments/Results/<pair>_<timestamp> whose seed_0/config.json carries the
 benchmark-v2 tag and is not a refit; --run <label>=<run dir> overrides one model.
@@ -77,10 +77,10 @@ def main():
     parser.add_argument("--cases", nargs="+", default=CASES, choices=CASES)
     parser.add_argument("--run", action="append", default=[], help="<label>=<run dir>, overrides the automatic choice")
     parser.add_argument("--name", default="error_growth", help="output file stem in figures/")
-    parser.add_argument("--first-bin", action="store_true", help="also plot steps 1-10")
+    parser.add_argument("--no-first-bin", action="store_true", help="leave steps 1-10 out of the figure")
     args = parser.parse_args()
     overrides = dict(item.split("=", 1) for item in args.run)
-    shown = list(BINS) if args.first_bin else list(BINS)[1:]
+    shown = list(BINS)[1:] if args.no_first_bin else list(BINS)
 
     runs = {}
     for label, prefix, color in MODELS:
