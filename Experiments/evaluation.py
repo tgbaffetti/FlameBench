@@ -163,7 +163,7 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
             except FloatingPointError:
                 pass
         synchronize(model)
-        metrics, elapsed = FieldMetrics(metadata["fields"]), 0.0
+        metrics, elapsed, step_seconds = FieldMetrics(metadata["fields"]), 0.0, []
         # SSIM data range: range of each reference field over the case, read in chunks.
         low = high = None
         for start in range(lo, hi, 256):
@@ -211,7 +211,8 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
             if np.isfinite(z).all():
                 predicted = scaler.inverse(compressor.decode(z))[0]
                 synchronize(model)
-                elapsed += time.perf_counter()-begin
+                step_seconds.append(time.perf_counter()-begin)
+                elapsed += step_seconds[-1]
             if predicted is None or not np.isfinite(predicted).all():
                 diverged_at = k - first
                 if buffer:
@@ -244,8 +245,11 @@ def evaluate(model, dataset, compressor, scaler, directory, heat_release=True,
         result.update({"status": "completed", "restart_every": restart_every,
                        "forecast_steps": hi-first, "first_predicted_index": first,
                        "inference_seconds": elapsed, "seconds_per_step": elapsed/(hi-first),
+                       "seconds_per_step_median": float(np.median(step_seconds)),
+                       "seconds_per_step_std": float(np.std(step_seconds)),
                        "timing_scope": "latent transition + field decoding + inverse scaling; excludes initial encoding, IO, metrics",
                        "initialization": initialization, "Nx": dataset.Nx, "Ni": dataset.Ni})
+        np.save(directory / f"{case['name']}_step_seconds{suffix}.npy", np.asarray(step_seconds))
         if volumes is not None:
             q_pred, q_ref = [float(q) for q in q_pred], [float(q) for q in q_ref]
             result["heat_release_relative_l2"] = relative_l2(q_pred, q_ref)
