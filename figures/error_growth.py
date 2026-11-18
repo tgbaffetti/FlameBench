@@ -128,8 +128,11 @@ def main():
         axes[1, column].set_xlabel("rollout steps", fontsize=8)
     axes[0, 0].set_ylabel("field nRMSE")
     axes[1, 0].set_ylabel(r"heat-release error $\varepsilon_{\dot Q}$")
-    axes[0, 0].legend(frameon=False, fontsize=7)
-    fig.tight_layout()
+    # One legend for the whole figure, in a row above the panels, so it never covers data.
+    handles = [plt.Line2D([], [], color=color, marker="o", ms=3.5, lw=1.2) for _, (_, color) in runs.items()]
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.legend(handles, list(runs), loc="upper center", ncol=len(runs), frameon=False, fontsize=8,
+               bbox_to_anchor=(0.5, 1.0))
     for ext in ("pdf", "png"):
         fig.savefig(ROOT / "figures" / f"{args.name}.{ext}", dpi=200, bbox_inches="tight")
     print(f"saved figures/{args.name}.pdf/.png/.json")
